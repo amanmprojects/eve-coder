@@ -45,6 +45,23 @@ echo 'AI_GATEWAY_API_KEY=...' > ~/.config/eve-coder/env
 
 Variables already exported in your shell take precedence.
 
+## How it runs
+
+The published package ships a **prebuilt** server (built with `eve build`), so
+`eve-coder` needs no compilation at runtime:
+
+1. it starts the built server on `127.0.0.1` at a fresh random port,
+2. it attaches the interactive TUI to that server,
+3. when you quit the TUI, the server shuts down.
+
+Server logs live in `~/.local/state/eve-coder/server.log`.
+
+The eve HTTP channel accepts anonymous requests on the loopback interface
+(`none()` as a final auth fallback). That is safe as long as the server stays
+bound to `127.0.0.1` — do **not** point it at a public interface or tunnel it
+without adding `httpBasic()`/`jwtHmac()` to `agent/channels/eve.ts` first,
+since the agent can read and write the whole machine.
+
 ## Model
 
 The root agent uses `zai/glm-5.2` via the AI Gateway, routed through the
@@ -69,5 +86,5 @@ safety rules, and consider gating `bash` with `eve/tools/approval`'s
 
 ```bash
 npm pack                 # inspect what ships (no .env*, no .eve)
-npm publish --force      # publish / overwrite the stale package
+npm publish              # runs `npm run build` (prepublishOnly), then publishes
 ```

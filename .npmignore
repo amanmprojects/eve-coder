@@ -1,0 +1,11 @@
+# Build-time / local state that must not ship in the npm tarball.
+# (npm ignores .git, node_modules, and .env* on its own; .output IS shipped.) 
+.eve/
+.vercel/
+.next/
+.nitro/
+dist/
+coverage/
+.DS_Store
+*.tsbuildinfo
+*.tgz

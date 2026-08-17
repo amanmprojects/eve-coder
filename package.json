@@ -1,6 +1,6 @@
 {
   "name": "eve-coder",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "A fully-local coding agent built on eve. npm i -g eve-coder, run `eve-coder` in any directory, and a TUI opens that reads/writes your files on this machine (no sandbox).",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "agent",
     "bin",
+    ".output",
     "tsconfig.json",
     "README.md"
   ],
@@ -17,6 +18,7 @@
   },
   "scripts": {
     "build": "eve build",
+    "prepublishOnly": "npm run build",
     "dev": "eve dev",
     "start": "eve start",
     "typecheck": "tsc"

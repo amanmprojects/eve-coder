@@ -1,28 +1,31 @@
 #!/usr/bin/env node
 /**
- * eve-coder — run the local coding agent from ANY directory.
+ * eve-coder — run the local coding agent from ANY directory (prebuilt).
  *
- * Installed globally (`npm i -g eve-coder`), this launcher:
+ * The npm package ships a prebuilt eve server under `agent/../.output`
+ * (produced by `eve build`). This launcher:
  *   1. captures the directory you ran it from (that becomes the workspace),
  *   2. loads any unset env from ~/.config/eve-coder/env or ~/.eve-coder.env,
- *   3. spawns this package's bundled `eve dev` with LOCAL_CODER_ROOT set to
- *      your launch directory and a fresh random port per session, and
- *   4. opens the interactive TUI in your terminal.
+ *   3. starts the prebuilt server on 127.0.0.1 at a random free port with
+ *      LOCAL_CODER_ROOT set to your launch directory,
+ *   4. opens the interactive TUI connected to that server, and
+ *   5. shuts the server down when the TUI exits.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
 // 1. The workspace = the directory the user launched from (LC_ROOT overrides).
 const workspaceRoot = process.env.LC_ROOT ?? process.cwd();
+const BUILT_OUTPUT = join(APP_ROOT, ".output");
+const URL_RE = /http:\/\/127\.0\.0\.1:\d+/;
 
 // 2. Optional user config file (~/.config/eve-coder/env or ~/.eve-coder.env) —
 //    a place to keep AI_GATEWAY_API_KEY without editing your shell profile.
-//    Keys already in the environment win (eve dev also prefers process.env).
+//    Keys already in the environment win (eve also prefers process.env).
 function loadUserEnv() {
   const home = homedir();
   const xdg = process.env.XDG_CONFIG_HOME || join(home, ".config");
@@ -35,14 +38,11 @@ function loadUserEnv() {
       const eq = line.indexOf("=");
       if (eq <= 0) continue;
       const key = line.slice(0, eq).trim();
-      if (key && process.env[key] === undefined) {
-        process.env[key] = line.slice(eq + 1).trim();
-      }
+      if (key && process.env[key] === undefined) process.env[key] = line.slice(eq + 1).trim();
     }
   }
 }
 
-// 3. Locate the bundled eve CLI (a dependency of this package).
 function resolveEveBin() {
   const bits = process.platform === "win32" ? ["eve.cmd"] : ["eve"];
   for (const bit of bits) {
@@ -52,57 +52,116 @@ function resolveEveBin() {
   return null;
 }
 
+// Server logs go to XDG_STATE_HOME/eve-coder/server.log so they never garble
+// the TUI. If the server fails to boot we print the tail.
+function serverLogPath() {
+  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  const dir = join(base, "eve-coder");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    /* best effort */
+  }
+  return join(dir, "server.log");
+}
+function appendLog(file, text) {
+  try {
+    appendFileSync(file, text);
+  } catch {
+    /* best effort */
+  }
+}
+
 loadUserEnv();
 const eveBin = resolveEveBin();
 if (!eveBin) {
+  console.error("eve-coder: could not find the bundled 'eve' CLI. Reinstall with: npm i -g eve-coder");
+  process.exit(1);
+}
+if (!existsSync(BUILT_OUTPUT)) {
   console.error(
-    "eve-coder: could not find the bundled 'eve' CLI. Reinstall with: npm i -g eve-coder",
+    `eve-coder: no prebuilt output at ${BUILT_OUTPUT}. ` +
+      "Reinstall a built version: npm i -g eve-coder (or run `npm run build` in the source repo).",
   );
   process.exit(1);
 }
 
-// eve dev resolves its dev-runtime source root by walking UP from the app root
-// until it finds a `.git` or `pnpm-workspace.yaml` marker. When eve-coder is
-// installed globally under the nvm git checkout (~/.nvm), that walk overshoots
-// the package and picks $NVM_DIR as the source root, which breaks bundling.
-// Planting a `.git` marker at the package root stops the walk here.
-function ensureSourceRootMarker() {
-  const marker = join(APP_ROOT, ".git");
-  if (existsSync(marker)) return;
-  try {
-    mkdirSync(marker);
-  } catch (err) {
-    const msg = err && typeof err === "object" && "message" in err ? String(err.message) : String(err);
-    console.error(
-      `eve-coder: warning — could not create ${marker} (${msg}); ` +
-        `eve dev may fail to bundle if a parent directory is itself a git repo.`,
-    );
+const serverEnv = { ...process.env, LOCAL_CODER_ROOT: workspaceRoot };
+const logFile = serverLogPath();
+const server = spawn(eveBin, ["start", "--host", "127.0.0.1", "--port", "0"], {
+  cwd: APP_ROOT,
+  env: serverEnv,
+  stdio: ["ignore", "pipe", "pipe"],
+});
+
+let url = null;
+let serverTail = "";
+let tui = null;
+let finished = false;
+
+function finish(code) {
+  if (finished) return;
+  finished = true;
+  process.exit(code ?? 0);
+}
+
+function shutdownServer() {
+  server.kill("SIGTERM");
+  // Force-kill after a short grace period.
+  setTimeout(() => server.kill("SIGKILL"), 3000).unref();
+}
+
+function startTui() {
+  const args = process.argv.slice(2);
+  tui = spawn(eveBin, ["dev", url, ...args], { cwd: APP_ROOT, env: serverEnv, stdio: "inherit" });
+  tui.on("exit", (code) => {
+    shutdownServer();
+    finish(code ?? 0);
+  });
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+      tui?.kill(sig);
+      shutdownServer();
+      setTimeout(() => finish(sig === "SIGINT" ? 130 : 143), 500).unref();
+    });
   }
 }
-ensureSourceRootMarker();
 
-const args = process.argv.slice(2);
-// `--port 0` makes the OS pick a fresh free port per session, so two
-// eve-coder instances in different directories never collide or reconnect
-// to each other's server.
-const child =
-  process.platform === "win32"
-    ? spawn(eveBin, ["dev", "--name", "eve-coder", "--port", "0", ...args], {
-        cwd: APP_ROOT,
-        env: { ...process.env, LOCAL_CODER_ROOT: workspaceRoot },
-        stdio: "inherit",
-        shell: true,
-      })
-    : spawn(eveBin, ["dev", "--name", "eve-coder", "--port", "0", ...args], {
-        cwd: APP_ROOT,
-        env: { ...process.env, LOCAL_CODER_ROOT: workspaceRoot },
-        stdio: "inherit",
-      });
+server.stdout.on("data", (chunk) => {
+  const text = chunk.toString("utf8");
+  appendLog(logFile, text);
+  if (!url) {
+    serverTail += text;
+    if (serverTail.length > 20_000) serverTail = serverTail.slice(-20_000);
+    const m = serverTail.match(URL_RE);
+    if (m) {
+      url = m[0];
+      startTui();
+    }
+  }
+});
+server.stderr.on("data", (chunk) => appendLog(logFile, chunk));
 
-for (const sig of ["SIGINT", "SIGTERM"]) {
-  process.on(sig, () => child.kill(sig));
-}
-child.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  else process.exit(code ?? 0);
+server.on("error", (err) => {
+  console.error(`eve-coder: failed to start the server: ${err.message}`);
+  process.exit(1);
+});
+server.on("exit", (code) => {
+  if (!url) {
+    const logExists = existsSync(logFile);
+    console.error(`eve-coder: server exited before becoming ready (code ${code ?? "?"}).`);
+    if (logExists) {
+      console.error("--- server log tail ---");
+      try {
+        const lines = readFileSync(logFile, "utf8").split("\n").slice(-25);
+        console.error(lines.join("\n"));
+      } catch {
+        /* ignore */
+      }
+    }
+    process.exit(code ?? 1);
+  }
+  // Server died while the TUI was attached → close the TUI too.
+  tui?.kill("SIGTERM");
+  finish(1);
 });
