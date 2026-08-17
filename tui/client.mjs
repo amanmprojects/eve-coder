@@ -58,6 +58,11 @@ function saveSession(entry) {
   list.unshift(entry);
   writeFileSync(SESSIONS_FILE, JSON.stringify(list.slice(0, MAX_STORED_SESSIONS), null, 2));
 }
+function removeSession(id) {
+  if (!id) return;
+  const list = loadSessions().filter((s) => s.id !== id);
+  writeFileSync(SESSIONS_FILE, JSON.stringify(list, null, 2));
+}
 
 // ---------------------------------------------------------------------------
 // Transcript rendering (retained components; only the live assistant block is
@@ -170,7 +175,7 @@ function handleEvent(e) {
       busy = false;
       break;
     case "turn.failed":
-      appendChat(`✗ ${e.data?.error?.message ?? "turn failed"}`, "red");
+      appendChat(`✗ turn failed [${e.data?.code ?? "?"}]: ${e.data?.message ?? "unknown error"}`, "red");
       busy = false;
       break;
     case "turn.cancelled":
@@ -200,10 +205,17 @@ function handleEvent(e) {
       appendChat("— session ended (use /new or /resume)", "gray");
       busy = false;
       break;
-    case "session.failed":
-      appendChat(`✗ session: ${e.data?.error?.message ?? "session failed"}`, "red");
+    case "session.failed": {
+      const msg = `${e.data?.code ?? "?"}: ${e.data?.message ?? "session failed"}`;
+      appendChat(
+        `✗ session ended in failure [${msg}]. The next message starts a fresh session.`,
+        "red",
+      );
+      removeSession(e.data?.sessionId);
+      session = null; // recover: next prompt auto-creates a new session
       busy = false;
       break;
+    }
     default:
       break;
   }
@@ -244,6 +256,7 @@ async function sendTurn(text) {
   } catch (err) {
     appendChat(`✗ send failed: ${err?.message ?? err}`, "red");
     busy = false;
+    setStatus(sty.dim("idle"));
   }
 }
 
@@ -263,6 +276,7 @@ async function answerPendingInput(text) {
   } catch (err) {
     appendChat(`✗ answer failed: ${err?.message ?? err}`, "red");
     busy = false;
+    setStatus(sty.dim("idle"));
   }
 }
 
