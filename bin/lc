@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# lc — run the local-coder eve agent from anywhere.
+#
+# A fully-local coding agent (no sandbox): it operates on the directory you run
+# it from and touches the real host filesystem as the current user.
+set -euo pipefail
+
+AGENT_DIR="${LC_AGENT_DIR:-/home/aman/code/eve-agents/coding-agent}"
+PORT="${LC_PORT:-2000}"
+BASE="http://127.0.0.1:${PORT}"
+ROOT="${LC_ROOT:-$(pwd)}"
+
+p() { printf '%s\n' "$*" >&2; }
+
+usage() {
+  cat <<EOF
+Usage: lc [prompt ...]    run one turn against the current directory
+       lc dev             interactive TUI on the current directory (Ctrl+C to quit)
+       lc url             print the local server URL if one is running
+       lc stop            stop the server running on :$PORT
+       lc acp             serve the agent as an ACP stdio server (for ACP hosts)
+       lc help            this message
+
+Environment:
+  LC_ROOT        workspace directory the agent operates on (default: current dir)
+  LC_AGENT_DIR   eve agent project dir (default: $AGENT_DIR)
+  LC_PORT        port used by lc (default 2000)
+
+Examples:
+  lc "explain this repo and suggest the next change"
+  lc dev          # then chat with it live, like an interactive agent
+EOF
+}
+
+fmt() { printf '%s\n' "$1" | node "$AGENT_DIR/bin/_format-invoke.mjs"; }
+
+case "${1:-}" in
+  help|-h|--help)
+    usage
+    exit 0
+    ;;
+  dev)
+    cd "$AGENT_DIR"
+    exec env LOCAL_CODER_ROOT="$ROOT" npx eve dev --port "$PORT" --name local-coder
+    ;;
+  url)
+    if curl -sf "$BASE/" >/dev/null 2>&1; then
+      echo "$BASE (workspace: $ROOT)"
+    else
+      p "nothing running on :$PORT"
+      exit 1
+    fi
+    ;;
+  stop)
+    if command -v lsof >/dev/null 2>&1; then
+      pid="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+    elif command -v fuser >/dev/null 2>&1; then
+      pid="$(fuser "${PORT}/tcp" 2>/dev/null || true)"
+    else
+      pid=""
+    fi
+    if [ -n "$pid" ]; then
+      # shellcheck disable=SC2086
+      kill $pid 2>/dev/null || true
+      p "stopped pid(s) ${pid} on :$PORT"
+    else
+      p "nothing running on :$PORT"
+    fi
+    ;;
+  acp)
+    cd "$AGENT_DIR"
+    exec env LOCAL_CODER_ROOT="$ROOT" npx eve acp
+    ;;
+  *)
+    prompt="$*"
+    if [ -z "$prompt" ]; then
+      usage
+      exit 1
+    fi
+    if curl -sf "$BASE/" >/dev/null 2>&1; then
+      # A local eve dev server is already up — reuse it. Note: it keeps the
+      # workspace it was started with, so LC_ROOT here is ignored.
+      [ -n "${LC_ROOT:-}" ] && p "note: reusing running server on :$PORT (workspace set at server start)"
+      out="$(cd "$AGENT_DIR" && npx eve invoke -u "$BASE" "$prompt" 2>/dev/null || true)"
+      fmt "$out"
+    else
+      # Boot a throwaway server with LOCAL_CODER_ROOT=<current dir> and invoke.
+      out="$(cd "$AGENT_DIR" && LOCAL_CODER_ROOT="$ROOT" npx eve invoke "$prompt" 2>/dev/null || true)"
+      fmt "$out"
+    fi
+    ;;
+esac

@@ -1,0 +1,70 @@
+import { readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { defineTool } from "eve/tools";
+import { z } from "zod";
+import { displayPath, resolveToRoot } from "../lib/workspace.js";
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+}
+
+export default defineTool({
+  description: `List the contents of a local directory with type, size, and entry count per subdirectory.
+Relative paths resolve against the workspace root. Use this to explore the filesystem before reading files.`,
+  inputSchema: z.object({
+    path: z
+      .string()
+      .optional()
+      .describe("Directory to list, relative to the workspace root or absolute. Default: workspace root."),
+    maxEntries: z.number().int().positive().max(2000).optional().describe("Cap on entries returned (default 500)."),
+  }),
+  async execute({ path, maxEntries = 500 }) {
+    const abs = resolveToRoot(path ?? "");
+    const info = await stat(abs).catch(() => null);
+    if (!info) throw new Error(`Path not found: ${path ?? "."} (resolved to ${abs}).`);
+    if (!info.isDirectory()) {
+      return {
+        path: displayPath(abs),
+        isDirectory: false,
+        kind: "file",
+        size: formatSize(info.size),
+        message: "This is a file, not a directory. Use read_file to view it.",
+        entries: [],
+      };
+    }
+    let names: string[];
+    try {
+      names = await readdir(abs);
+    } catch (err) {
+      throw new Error(`Failed to list ${abs}: ${(err as Error).message}`);
+    }
+
+    const entries = [];
+    for (const name of names.slice(0, maxEntries)) {
+      const childAbs = join(abs, name);
+      const child = await stat(childAbs).catch(() => null);
+      const kind = child?.isDirectory()
+        ? "dir"
+        : child?.isSymbolicLink()
+          ? "link"
+          : child?.isFile()
+            ? "file"
+            : "other";
+      entries.push({
+        name,
+        kind,
+        size: kind === "dir" || kind === "link" ? null : child ? formatSize(child.size) : null,
+      });
+    }
+
+    return {
+      path: displayPath(abs),
+      isDirectory: true,
+      count: entries.length,
+      truncated: names.length > maxEntries,
+      entries,
+    };
+  },
+});

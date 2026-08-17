@@ -1,10 +1,19 @@
 {
-  "name": "coding-agent",
-  "version": "0.0.0",
+  "name": "eve-coder",
+  "version": "1.0.1",
+  "description": "A fully-local coding agent built on eve. npm i -g eve-coder, run `eve-coder` in any directory, and a TUI opens that reads/writes your files on this machine (no sandbox).",
   "type": "module",
+  "bin": {
+    "eve-coder": "bin/eve-coder.mjs"
+  },
+  "files": [
+    "agent",
+    "bin",
+    "tsconfig.json",
+    "README.md"
+  ],
   "imports": {
-    "#*": "./agent/*",
-    "#evals/*": "./evals/*"
+    "#*": "./agent/*"
   },
   "scripts": {
     "build": "eve build",
@@ -26,7 +35,14 @@
     "ai": "^7.0.58"
   },
   "engines": {
-    "node": "24.x"
-  }
-
+    "node": ">=24"
+  },
+  "keywords": [
+    "eve",
+    "agent",
+    "coding-agent",
+    "cli",
+    "ai"
+  ],
+  "license": "MIT"
 }
