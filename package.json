@@ -1,6 +1,6 @@
 {
   "name": "eve-coder",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A fully-local coding agent built on eve. npm i -g eve-coder, run `eve-coder` in any directory, and a TUI opens that reads/writes your files on this machine (no sandbox).",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "agent",
     "bin",
+    "tui",
     ".output",
     "tsconfig.json",
     "README.md"
@@ -24,6 +25,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "@earendil-works/pi-tui": "^0.84.2",
     "@vercel/connect": "0.4.3",
     "ai": "^7.0.58",
     "eve": "^0.38.3",

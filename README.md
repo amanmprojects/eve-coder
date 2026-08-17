@@ -47,14 +47,30 @@ Variables already exported in your shell take precedence.
 
 ## How it runs
 
-The published package ships a **prebuilt** server (built with `eve build`), so
-`eve-coder` needs no compilation at runtime:
+The published package ships a **prebuilt** server (built with `eve build`) and a
+terminal client powered by [`@earendil-works/pi-tui`](https://www.npmjs.com/package/@earendil-works/pi-tui)
+(the rendering library pi's own shell is built on), so `eve-coder` needs no
+compilation at runtime:
 
 1. it starts the built server on `127.0.0.1` at a fresh random port,
-2. it attaches the interactive TUI to that server,
+2. it opens the pi-style TUI, which talks to the server over the typed
+   `eve/client` SDK (durable sessions, streaming, compaction),
 3. when you quit the TUI, the server shuts down.
 
-Server logs live in `~/.local/state/eve-coder/server.log`.
+Server logs live in `~/.local/state/eve-coder/server.log`; remembered sessions
+live in `~/.local/state/eve-coder/sessions.json`.
+
+### TUI commands
+
+| Command | What it does |
+| --- | --- |
+| `/new` | start a brand-new session |
+| `/resume [id]` | resume a saved session (number from `/sessions`, id prefix, or label) |
+| `/sessions` | list saved sessions |
+| `/compact` | compact this session's context |
+| `/clear` | clear this session's history (keeps its identity) |
+| `/cancel` | stop the current turn (Ctrl+C also works while working) |
+| `/quit` | exit (Ctrl+D also works) |
 
 The eve HTTP channel accepts anonymous requests on the loopback interface
 (`none()` as a final auth fallback). That is safe as long as the server stays

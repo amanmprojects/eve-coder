@@ -112,8 +112,14 @@ function shutdownServer() {
 }
 
 function startTui() {
-  const args = process.argv.slice(2);
-  tui = spawn(eveBin, ["dev", url, ...args], { cwd: APP_ROOT, env: serverEnv, stdio: "inherit" });
+  // Our pi-tui TUI talks to the prebuilt server over eve/client. It receives
+  // the server URL and workspace via the environment.
+  const tuiScript = join(APP_ROOT, "tui", "client.mjs");
+  tui = spawn(process.execPath, [tuiScript], {
+    cwd: APP_ROOT,
+    env: { ...serverEnv, EVE_CODER_SERVER_URL: url },
+    stdio: "inherit",
+  });
   tui.on("exit", (code) => {
     shutdownServer();
     finish(code ?? 0);
