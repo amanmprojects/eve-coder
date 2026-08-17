@@ -10,7 +10,7 @@
  *   4. opens the interactive TUI in your terminal.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,26 @@ if (!eveBin) {
   );
   process.exit(1);
 }
+
+// eve dev resolves its dev-runtime source root by walking UP from the app root
+// until it finds a `.git` or `pnpm-workspace.yaml` marker. When eve-coder is
+// installed globally under the nvm git checkout (~/.nvm), that walk overshoots
+// the package and picks $NVM_DIR as the source root, which breaks bundling.
+// Planting a `.git` marker at the package root stops the walk here.
+function ensureSourceRootMarker() {
+  const marker = join(APP_ROOT, ".git");
+  if (existsSync(marker)) return;
+  try {
+    mkdirSync(marker);
+  } catch (err) {
+    const msg = err && typeof err === "object" && "message" in err ? String(err.message) : String(err);
+    console.error(
+      `eve-coder: warning — could not create ${marker} (${msg}); ` +
+        `eve dev may fail to bundle if a parent directory is itself a git repo.`,
+    );
+  }
+}
+ensureSourceRootMarker();
 
 const args = process.argv.slice(2);
 // `--port 0` makes the OS pick a fresh free port per session, so two
