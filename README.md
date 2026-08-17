@@ -60,6 +60,11 @@ compilation at runtime:
 Server logs live in `~/.local/state/eve-coder/server.log`; remembered sessions
 live in `~/.local/state/eve-coder/sessions.json`.
 
+The TUI uses **pi's dark theme** (the `dark.json` palette from the pi-coding-agent)
+and supports **Tab completion** for slash commands (`/res` + Tab → `/resume`).
+The agent's system prompt follows pi's structure (identity, available tools,
+guidelines, working directory) so it self-identifies as `eve-coder`.
+
 ### TUI commands
 
 | Command | What it does |

@@ -1,48 +1,126 @@
-// Minimal ANSI styling + a MarkdownTheme for pi-tui's Markdown renderer.
-// No external color dependency; we emit raw SGR escape sequences the same way
-// pi does via chalk.
+// pi "dark" theme, ported to dependency-free 24-bit ANSI.
+// Color values and roles from
+//   packages/coding-agent/src/modes/interactive/theme/dark.json
+// Rendered without chalk so the TUI has zero color deps at runtime.
 
-const ESC = "\x1b[";
-const sgr = (code, text) => `${ESC}${code}m${text}${ESC}0m`;
+const RESET = "\x1b[0m";
 
+/** pi dark.json `vars` + the markdown/syntax colors we use in the shell. */
+const palette = {
+  // vars
+  cyan: "#00d7ff",
+  blue: "#5f87ff",
+  green: "#b5bd68",
+  red: "#cc6666",
+  yellow: "#ffff00",
+  text: "#d4d4d4",
+  gray: "#808080",
+  dimGray: "#666666",
+  darkGray: "#505050",
+  accent: "#8abeb7",
+  selectedBg: "#3a3a4a",
+  userMsgBg: "#343541",
+  toolPendingBg: "#282832",
+  toolSuccessBg: "#283228",
+  toolErrorBg: "#3c2828",
+  customMsgBg: "#2d2838",
+  // markdown
+  mdHeading: "#f0c674",
+  mdLink: "#81a2be",
+  mdCode: "#8abeb7",
+  mdCodeBlock: "#b5bd68",
+  mdQuote: "#808080",
+  mdListBullet: "#8abeb7",
+};
+
+/** Semantic role → palette key (mirrors dark.json `colors` we use). */
+export const theme = {
+  accent: "accent",
+  text: "text",
+  muted: "gray",
+  dim: "dimGray",
+  subtle: "darkGray",
+  success: "green",
+  error: "red",
+  warning: "yellow",
+  cyan: "cyan",
+  blue: "blue",
+  userBg: "userMsgBg",
+  toolPendingBg: "toolPendingBg",
+  toolSuccessBg: "toolSuccessBg",
+  toolErrorBg: "toolErrorBg",
+  thinking: "dimGray",
+  mdHeading: "mdHeading",
+  mdLink: "mdLink",
+  mdCode: "mdCode",
+  mdCodeBlock: "mdCodeBlock",
+  mdQuote: "mdQuote",
+  mdListBullet: "mdListBullet",
+};
+
+function rgb16(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** Foreground code for a palette key. `key` may be a hex string too. */
+export function fgCode(key) {
+  const h = key?.startsWith("#") ? key : palette[key] ?? palette.text;
+  const [r, g, b] = rgb16(h);
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
+/** Background code for a palette key. */
+export function bgCode(key) {
+  const h = key?.startsWith("#") ? key : palette[key] ?? palette.selectedBg;
+  const [r, g, b] = rgb16(h);
+  return `\x1b[48;2;${r};${g};${b}m`;
+}
+
+/** Paint `text` in a named color (resets at the end). */
+export function color(key, text) {
+  return `${fgCode(key)}${text}${RESET}`;
+}
+/** Paint `text` on a background + optional fg. */
+export function paintOn(bgKey, text, fgKey) {
+  return `${bgCode(bgKey)}${fgKey ? fgCode(fgKey) : ""}${text}${RESET}`;
+}
+
+// Named SGR helpers (compatible with the old `sty` API).
+const paint = (code, text) => `${code}${text}${RESET}`;
 export const sty = {
-  bold: (t) => sgr(1, t),
-  dim: (t) => sgr(2, t),
-  italic: (t) => sgr(3, t),
-  underline: (t) => sgr(4, t),
-  red: (t) => sgr(31, t),
-  green: (t) => sgr(32, t),
-  yellow: (t) => sgr(33, t),
-  blue: (t) => sgr(34, t),
-  magenta: (t) => sgr(35, t),
-  cyan: (t) => sgr(36, t),
-  gray: (t) => sgr(90, t),
-  cyanBright: (t) => sgr(96, t),
-  greenBright: (t) => sgr(92, t),
-  redBright: (t) => sgr(91, t),
-  yellowBright: (t) => sgr(93, t),
-  bgUnderline: (t) => sgr(4, t),
+  bold: (t) => paint("\x1b[1m", t),
+  dim: (t) => paint("\x1b[2m", t),
+  italic: (t) => paint("\x1b[3m", t),
+  underline: (t) => paint("\x1b[4m", t),
+  reverse: (t) => paint("\x1b[7m", t),
+  red: (t) => color("error", t),
+  green: (t) => color("success", t),
+  yellow: (t) => color("warning", t),
+  blue: (t) => color("blue", t),
+  cyan: (t) => color("cyan", t),
+  magenta: (t) => paint("\x1b[35m", t),
+  gray: (t) => color("muted", t),
 };
 
 /**
- * A MarkdownTheme for @earendil-works/pi-tui's Markdown component.
- * All style callbacks receive already-rendered content and return styled text.
+ * A MarkdownTheme for @earendil-works/pi-tui's Markdown component, mapped to
+ * pi's dark palette.
  */
 export function makeMarkdownTheme() {
   return {
-    heading: (t) => sty.bold(sty.cyanBright(t)),
-    link: (t) => sty.underline(sty.blue(t)),
-    linkUrl: (t) => sty.dim(sty.gray(t)),
-    code: (t) => sty.cyan(t),
-    codeBlock: (t) => t,
-    codeBlockBorder: (t) => sty.dim(sty.gray(t)),
-    quote: (t) => sty.dim(t),
-    quoteBorder: (t) => sty.dim(t),
-    hr: (t) => sty.dim(t),
-    listBullet: (t) => sty.cyanBright(t),
+    heading: (t) => color("mdHeading", sty.bold(t)),
+    link: (t) => color("mdLink", sty.underline(t)),
+    linkUrl: (t) => color("dim", t),
+    code: (t) => color("mdCode", t),
+    codeBlock: (t) => color("mdCodeBlock", t),
+    codeBlockBorder: (t) => color("muted", t),
+    quote: (t) => color("mdQuote", t),
+    quoteBorder: (t) => color("mdQuote", t),
+    hr: (t) => color("muted", t),
+    listBullet: (t) => color("mdListBullet", t),
     bold: (t) => sty.bold(t),
     italic: (t) => sty.italic(t),
-    strikethrough: (t) => sgr(9, t),
+    strikethrough: (t) => `[9m${t}${RESET}`,
     underline: (t) => sty.underline(t),
     codeBlockIndent: "  ",
   };

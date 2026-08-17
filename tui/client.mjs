@@ -24,11 +24,12 @@ import {
   TuiMainScreen,
   matchesKey,
 } from "@earendil-works/pi-tui";
-import { makeMarkdownTheme, sty } from "./theme.mjs";
+import { color, makeMarkdownTheme, paintOn, sty } from "./theme.mjs";
 
 const SERVER_URL = process.env.EVE_CODER_SERVER_URL;
 const WORKSPACE = process.env.LOCAL_CODER_ROOT ?? "";
 const MAX_STORED_SESSIONS = 50;
+const COMMANDS = ["/new", "/resume", "/sessions", "/compact", "/clear", "/cancel", "/help", "/quit"];
 
 // ---------------------------------------------------------------------------
 // Session catalog (persisted locally for /sessions + /resume across runs)
@@ -84,7 +85,7 @@ function appendComponent(comp) {
   requestRender();
 }
 function appendUser(text) {
-  appendComponent(new Text(`${sty.bold(sty.blue("you"))} ${text}`, 1, 0));
+  appendComponent(new Text(paintOn("userMsgBg", `${sty.bold(" you ")} ${text}`, "text"), 0, 0));
 }
 function appendChat(text, color) {
   appendComponent(new Text(sty[color] ? sty[color](text) : text, 1, 0));
@@ -110,8 +111,7 @@ function closeAssistant() {
 }
 function appendTool(toolName) {
   appendChat(`⚙ ${toolName}`, "dim");
-}
-function setStatus(text) {
+}function setStatus(text) {
   if (!statusLine || !tui) return;
   const next = new Text(text, 0, 0);
   tui.removeChild(statusLine);
@@ -167,7 +167,7 @@ function handleEvent(e) {
       break;
     case "turn.started":
       busy = true;
-      setStatus(sty.yellowBright("…working"));
+      setStatus(color("warning", "…working"));
       break;
     case "turn.completed":
       closeAssistant();
@@ -241,7 +241,7 @@ async function sendTurn(text) {
   firstUserMessage = firstUserMessage ?? text;
   appendUser(text);
   input.setValue("");
-  setStatus(sty.yellowBright("…sending"));
+  setStatus(color("warning", "…sending"));
   try {
     let response;
     if (session) {
@@ -263,7 +263,7 @@ async function sendTurn(text) {
 async function answerPendingInput(text) {
   appendUser(text);
   input.setValue("");
-  setStatus(sty.yellowBright("…answering"));
+  setStatus(color("warning", "…answering"));
   try {
     const reqs = pendingRequests;
     pendingRequests = [];
@@ -519,6 +519,21 @@ async function main() {
       terminal.clearScreen();
       return { consume: true };
     }
+    if (matchesKey(data, "tab")) {
+      const v = input.getValue();
+      if (v.startsWith("/")) {
+        const prefix = v.toLowerCase();
+        const cands = COMMANDS.filter((c) => c.startsWith(prefix));
+        if (cands.length === 1) {
+          input.setValue(`${cands[0]} `);
+          return { consume: true };
+        }
+        if (cands.length > 1) {
+          setStatus(color("muted", `completions: ${cands.join("  ")}`));
+          return { consume: true };
+        }
+      }
+    }
     return undefined;
   });
 
@@ -526,7 +541,7 @@ async function main() {
   tui.start();
 
   setStatus(
-    `${sty.dim(`eve-coder · ${footerModel || "?"} · ${WORKSPACE || "no workspace"}`)} ${sty.gray("/help")}`,
+    `${color("accent", sty.bold("eve-coder"))} ${color("dim", `· ${footerModel || "?"} · ${WORKSPACE || "no workspace"}`)} ${color("muted", "/help")}`,
   );
   appendChat(`eve-coder — local coding agent (${footerModel || "model"}). Type /help for commands.`, "green");
   tui.requestRender();
