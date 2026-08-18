@@ -5,7 +5,9 @@
 # it from and touches the real host filesystem as the current user.
 set -euo pipefail
 
-AGENT_DIR="${LC_AGENT_DIR:-/home/aman/code/eve-agents/coding-agent}"
+# Default to this package's own tree, wherever it happens to be installed.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENT_DIR="${LC_AGENT_DIR:-$(dirname "$SCRIPT_DIR")}"
 PORT="${LC_PORT:-2000}"
 BASE="http://127.0.0.1:${PORT}"
 ROOT="${LC_ROOT:-$(pwd)}"

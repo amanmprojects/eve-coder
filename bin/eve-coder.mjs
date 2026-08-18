@@ -6,10 +6,15 @@
  * (produced by `eve build`). This launcher:
  *   1. captures the directory you ran it from (that becomes the workspace),
  *   2. loads any unset env from ~/.config/eve-coder/env or ~/.eve-coder.env,
- *   3. starts the prebuilt server on 127.0.0.1 at a random free port with
- *      LOCAL_CODER_ROOT set to your launch directory,
+ *   3. spawns the prebuilt nitro server directly on 127.0.0.1 at a random
+ *      free port with LOCAL_CODER_ROOT set to your launch directory,
  *   4. opens the interactive TUI connected to that server, and
  *   5. shuts the server down when the TUI exits.
+ *
+ * The server is spawned directly (`node .output/server/index.mjs`) rather
+ * than through `eve start`: `eve start` prewarms sandboxes by reloading the
+ * agent modules from the build machine's absolute source paths, which do not
+ * exist on the machine the package is installed on.
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -21,6 +26,7 @@ const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // 1. The workspace = the directory the user launched from (LC_ROOT overrides).
 const workspaceRoot = process.env.LC_ROOT ?? process.cwd();
 const BUILT_OUTPUT = join(APP_ROOT, ".output");
+const SERVER_ENTRY = join(BUILT_OUTPUT, "server", "index.mjs");
 const URL_RE = /http:\/\/127\.0\.0\.1:\d+/;
 
 // 2. Optional user config file (~/.config/eve-coder/env or ~/.eve-coder.env) —
@@ -41,15 +47,6 @@ function loadUserEnv() {
       if (key && process.env[key] === undefined) process.env[key] = line.slice(eq + 1).trim();
     }
   }
-}
-
-function resolveEveBin() {
-  const bits = process.platform === "win32" ? ["eve.cmd"] : ["eve"];
-  for (const bit of bits) {
-    const candidate = join(APP_ROOT, "node_modules", ".bin", bit);
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 // Server logs go to XDG_STATE_HOME/eve-coder/server.log so they never garble
@@ -73,23 +70,29 @@ function appendLog(file, text) {
 }
 
 loadUserEnv();
-const eveBin = resolveEveBin();
-if (!eveBin) {
-  console.error("eve-coder: could not find the bundled 'eve' CLI. Reinstall with: npm i -g eve-coder");
-  process.exit(1);
-}
-if (!existsSync(BUILT_OUTPUT)) {
+if (!existsSync(SERVER_ENTRY)) {
   console.error(
-    `eve-coder: no prebuilt output at ${BUILT_OUTPUT}. ` +
+    `eve-coder: no prebuilt server at ${SERVER_ENTRY}. ` +
       "Reinstall a built version: npm i -g eve-coder (or run `npm run build` in the source repo).",
   );
   process.exit(1);
 }
 
-const serverEnv = { ...process.env, LOCAL_CODER_ROOT: workspaceRoot };
+// The prebuilt server keeps its local workflow store in `cwd/.eve/.workflow-data`,
+// so it must run from a directory the current user can write to. Use the same
+// state directory as the server log rather than the (root-owned) package dir.
 const logFile = serverLogPath();
-const server = spawn(eveBin, ["start", "--host", "127.0.0.1", "--port", "0"], {
-  cwd: APP_ROOT,
+const serverCwd = dirname(logFile);
+const serverEnv = {
+  ...process.env,
+  LOCAL_CODER_ROOT: workspaceRoot,
+  HOST: "127.0.0.1",
+  NITRO_HOST: "127.0.0.1",
+  PORT: "0",
+  NITRO_PORT: "0",
+};
+const server = spawn(process.execPath, [SERVER_ENTRY], {
+  cwd: serverCwd,
   env: serverEnv,
   stdio: ["ignore", "pipe", "pipe"],
 });
