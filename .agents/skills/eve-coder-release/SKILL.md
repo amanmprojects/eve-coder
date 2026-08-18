@@ -5,10 +5,11 @@ description: Push eve-coder changes to GitHub and publish/install the package. U
 
 # eve-coder release workflow
 
-This package is distributed as a **GitHub release tarball**, not via the npm
-registry. `npm login` is impossible on this machine (passkey needs the iPhone),
-and the npm-registry `eve-coder` (1.3.0) is a broken build anyway. `npm pack`
-and `gh` need **no login** — they are the publish path.
+This package is distributed as a **GitHub release tarball** and published to
+the npm registry. `npm publish` works (`npm whoami` → `aman-mehtar`) but the
+account has 2FA: publish requires a one-time password — run it interactively
+and complete the OTP flow in the browser it prints. `npm pack` and `gh` need
+**no login** — they are the always-available publish path.
 
 Working clone: `~/eve-coder` (origin = `https://github.com/amanmprojects/eve-coder.git`, branch `main`, `gh` CLI authenticated as `amanmprojects`).
 
@@ -47,6 +48,30 @@ sudo npm i -g https://github.com/amanmprojects/eve-coder/releases/download/v<ver
 Keep `<version>` in the URL in sync with `package.json`. The npm 11
 `allow-scripts` warning about the blocked `prepare` script on install is benign:
 the tarball ships `.output` prebuilt.
+
+## Fast local install loop (pnpm, no network)
+
+`npm i -g` downloads the tarball every iteration; pnpm installs a local pack in
+~10s. Note pnpm resolves relative paths from the global dir, so always use an
+**absolute** tarball path:
+
+```sh
+cd ~/code/eve-agents/coding-agent   # the repo (NOT ~/eve-coder — it moved)
+npm run build && npm pack           # produces eve-coder-<version>.tgz
+pnpm i -g $PWD/eve-coder-<version>.tgz
+```
+
+## Do NOT publish with a file: dependency in package.json
+
+1.5.1 was published with a stray `"eve-coder": "file:eve-coder-1.2.0.tgz"` in
+dependencies (added by a `pnpm add ./eve-coder-1.2.0.tgz` mistake, committed in
+`f2086c9`). A self-referential `file:` dep makes every `pnpm i -g eve-coder`
+die with `ENOENT` on `eve-coder-1.2.0.tgz` (resolved relative to the global
+dir). Before packing, grep the tarball:
+
+```sh
+npm pack && tar -xzOf eve-coder-<version>.tgz package/package.json | grep 'file:' || echo clean
+```
 
 ## Hard constraints — do NOT regress these
 
