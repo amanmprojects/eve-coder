@@ -1,6 +1,6 @@
 {
   "name": "eve-coder",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "A fully-local coding agent built on eve. npm i -g eve-coder, run `eve-coder` in any directory, and a TUI opens that reads/writes your files on this machine (no sandbox).",
   "type": "module",
   "bin": {
@@ -30,7 +30,6 @@
     "@vercel/connect": "0.4.3",
     "ai": "^7.0.58",
     "eve": "^0.38.3",
-    "eve-coder": "file:eve-coder-1.2.0.tgz",
     "zod": "4.4.3"
   },
   "devDependencies": {
