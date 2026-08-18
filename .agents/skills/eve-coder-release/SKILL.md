@@ -26,9 +26,9 @@ Working clone: `~/eve-coder` (origin = `https://github.com/amanmprojects/eve-cod
    Confirm: `git fetch origin && git log origin/main -1` shows your commit.
 3. **If the change affects the shipped package** (anything in `bin/`, `agent/`, `tui/`, `tsconfig.json`, `package.json` — anything in the `files` list), rebuild + repack + re-upload the release asset:
    ```sh
-   cd ~/eve-coder
-   npm run build                 # regenerates .output
-   npm pack                      # produce eve-coder-<version>.tgz
+   cd ~/code/eve-agents/coding-agent   # the repo (NOT ~/eve-coder — it moved)
+   pnpm run build                      # regenerates .output
+   pnpm pack                           # produce eve-coder-<version>.tgz
    gh release upload v<version> eve-coder-<version>.tgz --clobber
    ```
    For a meaningful release, bump `package.json` `version` first (patch for fixes, minor for features), then create a new release:
@@ -51,15 +51,19 @@ the tarball ships `.output` prebuilt.
 
 ## Fast local install loop (pnpm, no network)
 
-`npm i -g` downloads the tarball every iteration; pnpm installs a local pack in
-~10s. Note pnpm resolves relative paths from the global dir, so always use an
+The repo is pnpm-managed (`pnpm-lock.yaml`, no `package-lock.json`). `npm i -g`
+downloads the tarball every iteration; pnpm installs a local pack in ~10s.
+Note pnpm resolves relative paths from the global dir, so always use an
 **absolute** tarball path:
 
 ```sh
 cd ~/code/eve-agents/coding-agent   # the repo (NOT ~/eve-coder — it moved)
-npm run build && npm pack           # produces eve-coder-<version>.tgz
+pnpm run build && pnpm pack         # produces eve-coder-<version>.tgz
 pnpm i -g $PWD/eve-coder-<version>.tgz
 ```
+
+`*.tgz` is gitignored (`.gitignore`) and npmignored (`.npmignore`) so stray
+tarballs can never be committed or packed again.
 
 ## Do NOT publish with a file: dependency in package.json
 
@@ -70,8 +74,12 @@ die with `ENOENT` on `eve-coder-1.2.0.tgz` (resolved relative to the global
 dir). Before packing, grep the tarball:
 
 ```sh
-npm pack && tar -xzOf eve-coder-<version>.tgz package/package.json | grep 'file:' || echo clean
+pnpm pack && tar -xzOf eve-coder-<version>.tgz package/package.json | grep 'file:' || echo clean
 ```
+
+Before publishing, sanity-check the packed tarball (exec bit, no `file:` deps,
+no nested `.tgz`): `tar -tvzf eve-coder-<version>.tgz | grep bin/eve-coder.mjs`
+must show `-rwxr-xr-x`.
 
 ## Hard constraints — do NOT regress these
 
