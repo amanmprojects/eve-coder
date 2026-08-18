@@ -19,6 +19,7 @@
   },
   "scripts": {
     "build": "eve build",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build",
     "dev": "eve dev",
     "start": "eve start",
