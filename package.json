@@ -1,6 +1,6 @@
 {
   "name": "eve-coder",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "A fully-local coding agent built on eve. npm i -g eve-coder, run `eve-coder` in any directory, and a TUI opens that reads/writes your files on this machine (no sandbox).",
   "type": "module",
   "bin": {
