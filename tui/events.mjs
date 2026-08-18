@@ -265,7 +265,7 @@ export function createEventHandler(app) {
 
       case "session.failed":
         transcript.notice(
-          `✗ session failed [${data.code ?? "?"}: ${data.message ?? "unknown"}] — the next message starts a fresh session.`,
+          `✗ session failed [${data.code ?? "?"}]: ${data.message ?? "unknown"} — the next message starts a fresh session.`,
           "error",
         );
         app.onSessionFailed(data.sessionId);

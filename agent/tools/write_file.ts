@@ -2,6 +2,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { withFileMutationQueue } from "../lib/file-mutation-queue.js";
 import { displayPath, resolveToRoot } from "../lib/workspace.js";
 
 export default defineTool({
@@ -19,31 +20,32 @@ existing file. Relative paths resolve against the workspace root.`,
   }),
   async execute({ path, content, overwrite }) {
     const abs = resolveToRoot(path);
-    const existing = await stat(abs).catch(() => null);
-    if (existing) {
-      if (!overwrite) {
-        throw new Error(
-          `${path} already exists. Read it first, then pass overwrite: true to replace it, ` +
-            `or use edit_file to make targeted changes.`,
-        );
+    return withFileMutationQueue(abs, async () => {
+      const existing = await stat(abs).catch(() => null);
+      if (existing) {
+        if (!overwrite) {
+          throw new Error(
+            `${path} already exists. Read it first, then pass overwrite: true to replace it, ` +
+              `or use edit_file to make targeted changes.`,
+          );
+        }
       }
-    }
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, content, "utf8");
-    let oldBytes = null;
-    if (existing) {
-      try {
-        oldBytes = (await readFile(abs)).length;
-      } catch {
-        oldBytes = null;
+      // Capture the previous size *before* writing — reading afterwards would
+      // return the new content's length, not the old file's.
+      let oldBytes = null;
+      if (existing) {
+        oldBytes = await readFile(abs).then((b) => b.length).catch(() => null);
       }
-    }
-    return {
-      path: displayPath(abs),
-      absolutePath: abs,
-      created: !existing,
-      overwritten: Boolean(existing),
-      wroteBytes: Buffer.byteLength(content, "utf8"),
-    };
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, content, "utf8");
+      return {
+        path: displayPath(abs),
+        absolutePath: abs,
+        created: !existing,
+        overwritten: Boolean(existing),
+        wroteBytes: Buffer.byteLength(content, "utf8"),
+        oldBytes,
+      };
+    });
   },
 });

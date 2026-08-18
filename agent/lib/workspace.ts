@@ -1,4 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
+import { access, constants } from "node:fs/promises";
+import { delimiter, dirname } from "node:path";
 import type { Dirent } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
 
@@ -49,7 +51,7 @@ export async function readTextFileCap(abs: string): Promise<string | null> {
   return buf.toString("utf8");
 }
 
-/** Uppercase every line with a 1-based line number: `12\tcontent`. */
+/** Prefix every line with a 1-based line number: `12\tcontent`. */
 export function numberLines(text: string, start = 1): string {
   return text
     .split("\n")
@@ -152,6 +154,8 @@ export interface WalkOptions {
   ignored?: Set<string>;
   includeDirs?: boolean;
   maxDepth?: number;
+  /** Extra predicate: return true to skip a path (checked after `ignored`). */
+  skip?: (absPath: string, isDir: boolean) => boolean;
 }
 
 export async function walk(
@@ -161,6 +165,7 @@ export async function walk(
   const ignored = opts.ignored ?? DEFAULT_IGNORED;
   const includeDirs = opts.includeDirs ?? false;
   const maxDepth = opts.maxDepth ?? 64;
+  const skip = opts.skip;
   const out: string[] = [];
 
   async function rec(dir: string, depth: number) {
@@ -176,6 +181,8 @@ export async function walk(
       const abs = join(dir, ent.name);
       const isDir = ent.isDirectory();
       if (!isDir && !ent.isFile()) continue; // skip symlinks/sockets/fifos
+      // Prune ignored directories early: skip both the entry and its subtree.
+      if (skip && skip(abs, isDir)) continue;
       if (isDir) {
         if (includeDirs) out.push(abs);
         await rec(abs, depth + 1);
@@ -189,15 +196,44 @@ export async function walk(
   return out;
 }
 
-/** List files under `base` (relative to root) matching a glob pattern. */
+// ---------------------------------------------------------------------------
+// Optional external tools (rg / fd)
+// ---------------------------------------------------------------------------
+
+const whichCache = new Map<string, string | null>();
+
+/** Resolve an executable on PATH (cached). Returns null when not found. */
+export async function which(name: string): Promise<string | null> {
+  if (whichCache.has(name)) return whichCache.get(name) ?? null;
+  const found = await resolveOnPath(name);
+  whichCache.set(name, found);
+  return found;
+}
+
+async function resolveOnPath(name: string): Promise<string | null> {
+  const path = process.env.PATH;
+  if (!path) return null;
+  const dirs = path.split(delimiter);
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const candidate = join(dir, name);
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // not executable here
+    }
+  }
+  return null;
+}
 export async function globFiles(
   base: string,
   pattern: string,
-  opts: { ignored?: Set<string> } = {},
+  opts: { ignored?: Set<string>; skip?: (absPath: string, isDir: boolean) => boolean } = {},
 ): Promise<string[]> {
   const baseAbs = resolveToRoot(base);
   const re = globToRegExp(pattern);
-  const files = await walk(baseAbs, { ignored: opts.ignored });
+  const files = await walk(baseAbs, { ignored: opts.ignored, skip: opts.skip });
   const out: string[] = [];
   for (const f of files) {
     if (re.test(posix.relative(baseAbs, f))) out.push(f);

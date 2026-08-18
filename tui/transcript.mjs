@@ -125,12 +125,20 @@ export class ToolBlock {
     }
     const right = rightParts.length ? `${rightParts.join(" ")} ` : "";
 
+    // The right side can carry an arbitrary-length error message, which must
+    // never push the line past the terminal width (that crashed the TUI). Cap
+    // it at half the line — ellipsizing the tail — so the tool name on the
+    // left always stays visible; the full message remains readable in the body.
+    const rightBudget = Math.max(1, Math.floor(width / 2) - 1);
+    const rightFitted =
+      visibleWidth(right) > rightBudget ? truncateToWidth(right, rightBudget, "…") : right;
+    const rightWidth = visibleWidth(rightFitted);
+
     // Reserve room for the right-hand side, then truncate the left to fit.
-    const rightWidth = visibleWidth(right);
     const room = Math.max(1, width - rightWidth);
     const leftFitted = visibleWidth(left) > room ? truncateToWidth(left, room, "…") : left;
     const pad = " ".repeat(Math.max(0, width - visibleWidth(leftFitted) - rightWidth));
-    return fillLine(leftFitted + pad + right, width, bgFn);
+    return fillLine(leftFitted + pad + rightFitted, width, bgFn);
   }
 
   /** The collapsible body: streamed/finished output, or pre-run detail. */
@@ -141,14 +149,31 @@ export class ToolBlock {
         : null;
       return partial ?? renderDetail(this.toolName, this.input);
     }
-    return renderOutput(this.toolName, this.output, this.input, this.isError);
+    const rendered = renderOutput(this.toolName, this.output, this.input, this.isError);
+    // A failed call may carry no output at all (the message lives only in the
+    // header, where it is now truncated), so surface the message in the body
+    // where it can wrap instead of vanishing.
+    if (this.isError && this.error?.message) {
+      const out = this.output;
+      const empty =
+        out == null ||
+        String(out).trim() === "" ||
+        (typeof out === "object" && Object.keys(out).length === 0);
+      if (empty) return color("error", this.error.message);
+    }
+    return rendered;
   }
 
   render(width) {
     if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 
     const bgFn = bgPainter(this.bgKey(), "toolOutput");
-    const lines = [this.renderHeader(width, bgFn)];
+    // pi wraps each tool call in a `Box(1,1)`: one bg-painted blank line above
+    // and below the content. That pad is the block's own padding — separate
+    // from the leading `Spacer(1)` the transcript prepends — and it is what
+    // makes consecutive tools sit three blank lines apart while a tool next to
+    // an assistant sits two.
+    const lines = [fillLine("", width, bgFn), this.renderHeader(width, bgFn)];
 
     const body = this.bodyText();
     if (body && String(body).trim() !== "") {
@@ -173,7 +198,11 @@ export class ToolBlock {
           const where = prefersTail(this.toolName) ? "earlier" : "more";
           lines.push(
             fillLine(
-              `  ${color("dim", `… (${skippedCount} ${where} line${skippedCount === 1 ? "" : "s"}, ctrl+o to expand)`)}`,
+              truncateToWidth(
+                `  ${color("dim", `… (${skippedCount} ${where} line${skippedCount === 1 ? "" : "s"}, ctrl+o to expand)`)}`,
+                width,
+                "…",
+              ),
               width,
               bgFn,
             ),
@@ -181,6 +210,8 @@ export class ToolBlock {
         }
       }
     }
+
+    lines.push(fillLine("", width, bgFn));
 
     this.cachedWidth = width;
     this.cachedLines = lines;
@@ -300,6 +331,9 @@ export class Transcript {
     this.toolBlocks = new Map(); // callId → ToolBlock
     this.showReasoning = true;
     this.expanded = false;
+    /** Tracks whether the last appended line was a notice, so a run of notices
+     *  shares a single leading blank line the way pi's `showStatus` does. */
+    this.lastWasNotice = false;
   }
 
   // --- plumbing ------------------------------------------------------------
@@ -310,11 +344,31 @@ export class Transcript {
     return component;
   }
 
+  /**
+   * Add a leading `Spacer(1)` before the next block, mirroring pi.
+   *
+   * pi gives every block (user, reasoning, tool, assistant) its own leading
+   * `Spacer(1)` and never collapses it against the previous block's trailing
+   * space. User and tool blocks *additionally* carry a top/bottom padding blank
+   * (pi's `Box(paddingY=1)`); assistant/reasoning carry none. Composing those
+   * yields pi's exact spacing:
+   *   - two blank lines between most blocks (prev trailing pad + leading spacer,
+   *     or leading spacer + next top pad),
+   *   - three between consecutive tools (prev bottom pad + leading spacer +
+   *     top pad),
+   *   - one between adjacent assistant/reasoning (leading spacer only).
+   */
+  leadingSpacer() {
+    if (this.container.children.length === 0) return;
+    this.container.addChild(new Spacer(1));
+  }
+
   clear() {
     this.container.clear();
     this.liveAssistant = null;
     this.liveReasoning = null;
     this.toolBlocks.clear();
+    this.lastWasNotice = false;
     this.requestRender();
   }
 
@@ -348,16 +402,28 @@ export class Transcript {
 
   addUser(text) {
     this.closeLive();
+    this.leadingSpacer();
+    this.lastWasNotice = false;
+    // padY=1 reproduces pi's `Box(1,1)` around the user message: a bg-painted
+    // blank line above and below the text. That top/bottom pad is what makes
+    // the block sit two blank lines from its neighbours, matching pi.
     this.append(
-      new Text(`${sty.bold(color("accent", " › "))}${color("text", text)}`, 0, 0, bgPainter("userMsgBg")),
+      new Text(`${sty.bold(color("accent", " › "))}${color("text", text)}`, 0, 1, bgPainter("userMsgBg")),
     );
-    this.append(new Spacer(1));
   }
 
   /** A framework/CLI notice (not model output). */
   notice(text, role = "muted") {
     this.closeLive();
+    // A run of back-to-back notices shares one leading blank line; a notice
+    // after any other block gets its own. Mirrors pi's `showStatus` coalescing.
+    const kids = this.container.children;
+    const last = kids.length > 0 ? kids[kids.length - 1] : undefined;
+    if (kids.length > 0 && !(last instanceof Spacer) && !this.lastWasNotice) {
+      this.container.addChild(new Spacer(1));
+    }
     this.append(new Text(color(role, text), 1, 0));
+    this.lastWasNotice = true;
   }
 
   assistantDelta(soFar) {
@@ -365,15 +431,16 @@ export class Transcript {
     if (this.liveAssistant) {
       this.liveAssistant.setText(soFar);
     } else {
+      this.leadingSpacer();
       this.liveAssistant = this.append(new Markdown(soFar, 1, 0, this.mdTheme));
     }
+    this.lastWasNotice = false;
     this.requestRender();
   }
 
   closeAssistant() {
     if (!this.liveAssistant) return;
     this.liveAssistant = null;
-    this.append(new Spacer(1));
   }
 
   reasoningDelta(soFar) {
@@ -382,10 +449,12 @@ export class Transcript {
     if (this.liveReasoning) {
       this.liveReasoning.setText(soFar);
     } else {
+      this.leadingSpacer();
       this.liveReasoning = this.append(
         new ReasoningBlock(soFar, { visible: this.showReasoning, expanded: this.expanded }),
       );
     }
+    this.lastWasNotice = false;
     this.requestRender();
   }
 
@@ -393,7 +462,6 @@ export class Transcript {
     if (!this.liveReasoning) return;
     this.liveReasoning.finish();
     this.liveReasoning = null;
-    this.append(new Spacer(1));
   }
 
   closeLive() {
@@ -406,6 +474,8 @@ export class Transcript {
   toolStart(callId, toolName, input) {
     this.closeLive();
     if (this.toolBlocks.has(callId)) return this.toolBlocks.get(callId);
+    this.leadingSpacer();
+    this.lastWasNotice = false;
     const block = new ToolBlock(callId, toolName, input, { expanded: this.expanded });
     this.toolBlocks.set(callId, block);
     return this.append(block);

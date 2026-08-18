@@ -153,7 +153,7 @@ const renderers = {
               ? color("dim", ` (${e.count})`)
               : ""
             : e?.size != null
-              ? color("dim", ` ${formatBytes(e.size)}`)
+              ? color("dim", ` ${typeof e.size === "number" ? formatBytes(e.size) : e.size}`)
               : "";
           return `${name}${meta}`;
         })

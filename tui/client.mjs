@@ -318,7 +318,6 @@ const app = {
     }
     prefs = savePrefs({ showReasoning: next });
     transcript.setShowReasoning(next);
-    transcript.notice(`reasoning traces ${next ? "shown" : "hidden"}`, "success");
   },
 
   setExpanded(arg) {
@@ -329,7 +328,6 @@ const app = {
     }
     prefs = savePrefs({ expandTools: next });
     transcript.setExpanded(next);
-    transcript.notice(`tool output ${next ? "expanded" : "collapsed"}`, "success");
   },
 
   async listTools() {

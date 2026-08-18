@@ -4,12 +4,6 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { displayPath, resolveToRoot } from "../lib/workspace.js";
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
-}
-
 export default defineTool({
   description: `List the contents of a local directory with type, size, and entry count per subdirectory.
 Relative paths resolve against the workspace root. Use this to explore the filesystem before reading files.`,
@@ -29,7 +23,7 @@ Relative paths resolve against the workspace root. Use this to explore the files
         path: displayPath(abs),
         isDirectory: false,
         kind: "file",
-        size: formatSize(info.size),
+        size: info.size,
         message: "This is a file, not a directory. Use read_file to view it.",
         entries: [],
       };
@@ -55,7 +49,8 @@ Relative paths resolve against the workspace root. Use this to explore the files
       entries.push({
         name,
         kind,
-        size: kind === "dir" || kind === "link" ? null : child ? formatSize(child.size) : null,
+        isDirectory: kind === "dir",
+        size: kind === "dir" || kind === "link" ? null : child ? child.size : null,
       });
     }
 
