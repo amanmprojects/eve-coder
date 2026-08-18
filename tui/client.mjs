@@ -4,244 +4,137 @@
  *
  * Rendering: @earendil-works/pi-tui (the library pi's own shell is built on).
  * Agent protocol: eve/client — durable sessions, resume via attach(), context
- * compaction, clears, cooperative cancellation, ask_question (HITL).
+ * compaction, clears, cooperative cancellation, and HITL input requests.
+ *
+ * Layout, top to bottom: transcript → status line → editor → footer.
  *
  * Env:
- *   EVE_CODER_SERVER_URL  (required) the eve start server host
- *   LOCAL_CODER_ROOT      (optional) displayed workspace path
+ *   EVE_CODER_SERVER_URL  (required) the eve server base URL
+ *   LOCAL_CODER_ROOT      (optional) workspace path, shown in the banner
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { Client } from "eve/client";
 import {
-  Container,
-  Input,
-  Markdown,
+  CombinedAutocompleteProvider,
+  Editor,
   ProcessTerminal,
-  Spacer,
   Text,
   TuiMainScreen,
   matchesKey,
 } from "@earendil-works/pi-tui";
-import { color, makeMarkdownTheme, paintOn, sty } from "./theme.mjs";
+import { color, sty } from "./theme.mjs";
+import { DEFAULT_EFFORT, DEFAULT_MODEL, loadPrefs, savePrefs, stateDir } from "./runtime-config.mjs";
+import { Transcript, spinner } from "./transcript.mjs";
+import { Footer, StatusLine, banner } from "./footer.mjs";
+import { createEventHandler } from "./events.mjs";
+import { buildCommands, parseCommand, parseToggle } from "./commands.mjs";
+import { findSession, labelFor, loadSessions, removeSession, saveSession } from "./sessions.mjs";
 
-const SERVER_URL = process.env.EVE_CODER_SERVER_URL;
-const WORKSPACE = process.env.LOCAL_CODER_ROOT ?? "";
-const MAX_STORED_SESSIONS = 50;
-const COMMANDS = ["/new", "/resume", "/sessions", "/compact", "/clear", "/cancel", "/help", "/quit"];
-
-// ---------------------------------------------------------------------------
-// Session catalog (persisted locally for /sessions + /resume across runs)
-// ---------------------------------------------------------------------------
-function stateDir() {
-  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
-  const dir = join(base, "eve-coder");
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch {
-    /* best effort */
-  }
-  return dir;
-}
-const SESSIONS_FILE = join(stateDir(), "sessions.json");
-
-function loadSessions() {
-  try {
-    const raw = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
-    return Array.isArray(raw) ? raw : [];
-  } catch {
-    return [];
-  }
-}
-function saveSession(entry) {
-  const list = loadSessions().filter((s) => s.id !== entry.id);
-  list.unshift(entry);
-  writeFileSync(SESSIONS_FILE, JSON.stringify(list.slice(0, MAX_STORED_SESSIONS), null, 2));
-}
-function removeSession(id) {
-  if (!id) return;
-  const list = loadSessions().filter((s) => s.id !== id);
-  writeFileSync(SESSIONS_FILE, JSON.stringify(list, null, 2));
-}
+const WORKSPACE = process.env.LOCAL_CODER_ROOT ?? process.cwd();
+/** Spinner tick. Fast enough to look alive, slow enough to not thrash renders. */
+const SPINNER_INTERVAL_MS = 80;
 
 // ---------------------------------------------------------------------------
-// Transcript rendering (retained components; only the live assistant block is
-// rebuilt in place).
+// Mutable shell state
 // ---------------------------------------------------------------------------
-const theme = makeMarkdownTheme();
+const serverUrl = process.env.EVE_CODER_SERVER_URL;
+let client = null;
+let session = null; // ClientSession | null
 let tui = null;
-let chatContainer = null;
-let input = null;
-let statusLine = null;
-let liveAssistant = null; // the Markdown component currently streaming text
+let terminal = null;
+let editor = null;
+let transcript = null;
+let footer = null;
+let status = null;
+let handleEvent = null;
+let commands = [];
+let busy = false;
+let pendingRequests = [];
+let firstUserMessage = null;
+let prefs = loadPrefs();
+let spinnerTimer = null;
 
 function requestRender() {
   tui?.requestRender();
 }
-function appendComponent(comp) {
-  chatContainer.addChild(comp);
-  liveAssistant = null;
-  requestRender();
-}
-function appendUser(text) {
-  appendComponent(new Text(paintOn("userMsgBg", `${sty.bold(" you ")} ${text}`, "text"), 0, 0));
-}
-function appendChat(text, color) {
-  appendComponent(new Text(sty[color] ? sty[color](text) : text, 1, 0));
-}
-function appendAssistantDelta(soFar) {
-  const kids = chatContainer.children;
-  if (liveAssistant && kids[kids.length - 1] === liveAssistant) {
-    const next = new Markdown(soFar, 1, 0, theme);
-    chatContainer.removeChild(liveAssistant);
-    chatContainer.addChild(next);
-    liveAssistant = next;
-  } else {
-    liveAssistant = new Markdown(soFar, 1, 0, theme);
-    chatContainer.addChild(liveAssistant);
+
+/** Run the spinner clock only while something is actually in flight. */
+function syncSpinner() {
+  const active = busy || transcript?.hasPending();
+  if (active && !spinnerTimer) {
+    spinnerTimer = setInterval(() => {
+      spinner.frame += 1;
+      requestRender();
+    }, SPINNER_INTERVAL_MS);
+    spinnerTimer.unref?.();
+  } else if (!active && spinnerTimer) {
+    clearInterval(spinnerTimer);
+    spinnerTimer = null;
+    requestRender();
   }
-  requestRender();
 }
-function closeAssistant() {
-  if (!liveAssistant) return;
-  liveAssistant = null;
-  chatContainer.addChild(new Spacer(1));
-  requestRender();
-}
-function appendTool(toolName) {
-  appendChat(`⚙ ${toolName}`, "dim");
-}function setStatus(text) {
-  if (!statusLine || !tui) return;
-  const next = new Text(text, 0, 0);
-  tui.removeChild(statusLine);
-  statusLine = next;
-  tui.addChild(statusLine); // status stays the last child
-  requestRender();
+
+function setBusy(next) {
+  busy = next;
+  syncSpinner();
 }
 
 // ---------------------------------------------------------------------------
-// eve client + session lifecycle
+// Session persistence
 // ---------------------------------------------------------------------------
-let client = null;
-let session = null; // ClientSession | null
-let busy = false;
-let awaitingInput = false;
-let pendingRequests = [];
-let firstUserMessage = null;
-
-function persist(ss) {
-  if (!ss) return;
-  const label = firstUserMessage
-    ? firstUserMessage.length > 70
-      ? `${firstUserMessage.slice(0, 70)}…`
-      : firstUserMessage
-    : ss.sessionId.slice(0, 8);
+function persistSession(state) {
+  if (!state?.sessionId) return;
   saveSession({
-    id: ss.sessionId,
-    streamIndex: ss.streamIndex,
-    label,
+    id: state.sessionId,
+    streamIndex: state.streamIndex,
+    label: labelFor(firstUserMessage, state.sessionId.slice(0, 8)),
     cwd: WORKSPACE,
     ts: Date.now(),
   });
 }
 
-function handleEvent(e) {
-  switch (e?.type) {
-    case "message.appended":
-      appendAssistantDelta(e.data?.messageSoFar ?? e.data?.messageDelta ?? "");
-      break;
-    case "message.completed":
-      closeAssistant();
-      break;
-    case "reasoning.appended":
-    case "reasoning.completed":
-      setStatus(sty.dim("…thinking…"));
-      break;
-    case "step.started":
-      setStatus(sty.dim(`model ${e.data?.modelId ?? ""}`.trim()));
-      break;
-    case "action.partial":
-    case "action.result":
-      appendTool(e.data?.result?.toolName ?? "tool");
-      break;
-    case "turn.started":
-      busy = true;
-      setStatus(color("warning", "…working"));
-      break;
-    case "turn.completed":
-      closeAssistant();
-      appendChat("✓ done", "green");
-      busy = false;
-      break;
-    case "turn.failed":
-      appendChat(`✗ turn failed [${e.data?.code ?? "?"}]: ${e.data?.message ?? "unknown error"}`, "red");
-      busy = false;
-      break;
-    case "turn.cancelled":
-      appendChat("⏹ cancelled", "yellow");
-      busy = false;
-      break;
-    case "compaction.requested":
-      appendChat("… compacting context", "magenta");
-      busy = true;
-      break;
-    case "compaction.completed":
-      appendChat("✓ context compacted", "magenta");
-      busy = false;
-      break;
-    case "input.requested": {
-      const reqs = e.data?.requests ?? [];
-      pendingRequests = reqs;
-      awaitingInput = reqs.length > 0;
-      appendChat(`❓ ${reqs[0]?.prompt ?? "the agent is asking something"} — type your answer`, "cyan");
-      break;
-    }
-    case "session.waiting":
-      busy = false;
-      setStatus(sty.dim("idle"));
-      break;
-    case "session.completed":
-      appendChat("— session ended (use /new or /resume)", "gray");
-      busy = false;
-      break;
-    case "session.failed": {
-      const msg = `${e.data?.code ?? "?"}: ${e.data?.message ?? "session failed"}`;
-      appendChat(
-        `✗ session ended in failure [${msg}]. The next message starts a fresh session.`,
-        "red",
-      );
-      removeSession(e.data?.sessionId);
-      session = null; // recover: next prompt auto-creates a new session
-      busy = false;
-      break;
-    }
-    default:
-      break;
+// ---------------------------------------------------------------------------
+// Stream consumption
+// ---------------------------------------------------------------------------
+async function consume(response) {
+  try {
+    for await (const event of response) handleEvent(event);
+  } catch (err) {
+    transcript.notice(`✗ stream error: ${err?.message ?? err}`, "error");
+  } finally {
+    setBusy(false);
+    if (session) persistSession(session.state);
+    if (pendingRequests.length === 0) status.clear();
+    requestRender();
   }
 }
 
-async function consume(response) {
+/** Follow the live stream until the session reaches a quiet point. */
+async function followToBoundary() {
+  if (!session) return;
   try {
-    for await (const e of response) {
-      handleEvent(e);
+    for await (const event of session.stream({ follow: true })) {
+      handleEvent(event);
+      if (
+        event.type === "session.waiting" ||
+        event.type === "session.completed" ||
+        event.type === "session.failed"
+      ) {
+        return;
+      }
     }
   } catch (err) {
-    appendChat(`✗ stream error: ${err?.message ?? err}`, "red");
+    transcript.notice(`✗ stream error: ${err?.message ?? err}`, "error");
   } finally {
-    busy = false;
-    awaitingInput = false;
-    pendingRequests = [];
-    if (session) persist(session.state);
-    setStatus(sty.dim("idle"));
+    setBusy(false);
   }
 }
 
 async function sendTurn(text) {
   firstUserMessage = firstUserMessage ?? text;
-  appendUser(text);
-  input.setValue("");
-  setStatus(color("warning", "…sending"));
+  transcript.addUser(text);
+  status.set("sending", { busy: true });
+  setBusy(true);
   try {
     let response;
     if (session) {
@@ -250,206 +143,297 @@ async function sendTurn(text) {
       const created = await client.sessions.create({ message: text });
       session = created.session;
       response = created.response;
+      footer.setSessionId(session.state.sessionId);
     }
-    busy = true;
     await consume(response);
   } catch (err) {
-    appendChat(`✗ send failed: ${err?.message ?? err}`, "red");
-    busy = false;
-    setStatus(sty.dim("idle"));
+    transcript.notice(`✗ send failed: ${err?.message ?? err}`, "error");
+    setBusy(false);
+    status.clear();
   }
 }
 
+/**
+ * Answer a pending HITL request.
+ *
+ * eve expects `{requestId, optionId?, text?}`. When the request offers options,
+ * a bare number or an exact label picks one; anything else is sent as free text
+ * (which the request must allow).
+ */
 async function answerPendingInput(text) {
-  appendUser(text);
-  input.setValue("");
-  setStatus(color("warning", "…answering"));
-  try {
-    const reqs = pendingRequests;
-    pendingRequests = [];
-    awaitingInput = false;
-    const response = reqs.length > 0
-      ? await session.respond(reqs.map((r) => ({ requestId: r.requestId, value: text })))
-      : await session.send(text);
-    busy = true;
-    await consume(response);
-  } catch (err) {
-    appendChat(`✗ answer failed: ${err?.message ?? err}`, "red");
-    busy = false;
-    setStatus(sty.dim("idle"));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Slash commands
-// ---------------------------------------------------------------------------
-function cmdHelp() {
-  for (const l of [
-    "/new          start a brand-new session",
-    "/resume <id>  resume a previous session (number from /sessions, id prefix, or label)",
-    "/sessions     list saved sessions",
-    "/compact      compact this session's context",
-    "/clear        clear this session's history (keeps identity)",
-    "/cancel       stop the current turn",
-    "/quit         exit (or Ctrl+D; Ctrl+C cancels a running turn)",
-  ]) {
-    appendChat(l, "gray");
-  }
-}
-
-function cmdSessions() {
-  const list = loadSessions();
-  if (list.length === 0) {
-    appendChat("(no saved sessions yet)", "gray");
-    return;
-  }
-  list.forEach((s, i) => {
-    const date = new Date(s.ts ?? Date.now()).toISOString().slice(0, 16).replace("T", " ");
-    appendChat(`${String(i + 1).padStart(2)} ${s.id.slice(0, 12)} · ${date} · ${s.label ?? ""}`, "dim");
-  });
-  appendChat("use /resume <number|id-prefix> to reopen one", "gray");
-}
-
-async function cmdResume(arg) {
-  const list = loadSessions();
-  if (list.length === 0) {
-    appendChat("(no saved sessions to resume)", "gray");
-    return;
-  }
-  let target = null;
-  if (arg && /^\d+$/.test(arg)) {
-    target = list[parseInt(arg, 10) - 1];
-  } else if (arg) {
-    target =
-      list.find((s) => s.id.startsWith(arg)) ??
-      list.find((s) => (s.label ?? "").toLowerCase().includes(arg.toLowerCase()));
-  } else {
-    target = list[0];
-  }
-  if (!target) {
-    appendChat(`no session matching "${arg ?? ""}" — use /sessions`, "red");
-    return;
-  }
-  try {
-    session = client.sessions.attach(target.id, { streamIndex: target.streamIndex ?? 0 });
-    firstUserMessage = target.label ?? null;
-    appendChat(`↩ resuming ${target.id} · ${target.label ?? ""}`, "cyan");
-    setStatus("…loading history");
-    const snap = await session.snapshot();
-    for (const e of snap.events) handleEvent(e);
-    session = client.sessions.attach(target.id, { streamIndex: snap.session.streamIndex });
-    busy = false;
-    setStatus(sty.dim("idle — resumed"));
-  } catch (err) {
-    appendChat(`✗ resume failed: ${err?.message ?? err}`, "red");
-    session = null;
-  }
-}
-
-async function waitForBoundary() {
-  for await (const e of session.stream({ follow: true })) {
-    handleEvent(e);
-    if (e.type === "session.waiting" || e.type === "session.completed" || e.type === "session.failed") return;
-  }
-}
-
-async function cmdCompact() {
-  if (!session) {
-    appendChat("(no active session to compact)", "gray");
-    return;
-  }
-  appendChat("… compacting", "magenta");
-  try {
-    const res = await session.compact();
-    if (res.status !== "accepted") {
-      appendChat("(compaction not accepted)", "gray");
-      return;
-    }
-    await waitForBoundary();
-  } catch (err) {
-    appendChat(`✗ compact failed: ${err?.message ?? err}`, "red");
-  } finally {
-    busy = false;
-  }
-}
-
-async function cmdClear() {
-  if (!session) {
-    appendChat("(no active session to clear)", "gray");
-    return;
-  }
-  appendChat("… clearing history", "cyan");
-  try {
-    const res = await session.clear();
-    if (res.status === "no_active_session") {
-      appendChat("(no active session)", "gray");
-      return;
-    }
-    await waitForBoundary();
-  } catch (err) {
-    appendChat(`✗ clear failed: ${err?.message ?? err}`, "red");
-  } finally {
-    busy = false;
-  }
-}
-
-function cmdNew() {
-  if (session) {
-    session.reset({ reason: "new session requested" }).catch(() => {});
-  }
-  session = null;
-  firstUserMessage = null;
-  awaitingInput = false;
+  const requests = pendingRequests;
   pendingRequests = [];
-  for (const kid of [...chatContainer.children]) chatContainer.removeChild(kid);
-  liveAssistant = null;
-  appendChat("— new session — start typing (or /resume)", "green");
+  transcript.addUser(text);
+  status.set("answering", { busy: true });
+  setBusy(true);
+  try {
+    const responses = requests.map((request) => {
+      const options = Array.isArray(request.options) ? request.options : [];
+      if (options.length > 0) {
+        const index = /^\d+$/.test(text) ? Number.parseInt(text, 10) - 1 : -1;
+        const picked =
+          options[index] ??
+          options.find((o) => (o.label ?? "").toLowerCase() === text.toLowerCase()) ??
+          options.find((o) => o.id === text);
+        if (picked) return { requestId: request.requestId, optionId: picked.id };
+      }
+      return { requestId: request.requestId, text };
+    });
+    await consume(await session.respond(responses));
+  } catch (err) {
+    transcript.notice(`✗ answer failed: ${err?.message ?? err}`, "error");
+    setBusy(false);
+    status.clear();
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+const app = {
+  get transcript() {
+    return transcript;
+  },
+  get footer() {
+    return footer;
+  },
+  get status() {
+    return status;
+  },
+  setBusy,
+  setPendingRequests(requests) {
+    pendingRequests = requests ?? [];
+  },
+  onSessionFailed(sessionId) {
+    removeSession(sessionId);
+    session = null; // the next message starts a fresh session
+  },
+
+  help() {
+    transcript.notice("commands", "accent");
+    for (const cmd of commands) {
+      const name = `/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ""}`;
+      transcript.notice(`  ${color("cyan", name.padEnd(30))}${color("dim", cmd.description ?? "")}`, "text");
+    }
+    transcript.notice("keys", "accent");
+    for (const [key, what] of [
+      ["enter", "send · shift+enter or \\+enter for a newline"],
+      ["tab", "accept the highlighted completion"],
+      ["@", "complete a file path"],
+      ["ctrl+o", "expand / collapse tool output and reasoning"],
+      ["ctrl+r", "show / hide reasoning traces"],
+      ["esc", "interrupt the current turn"],
+      ["ctrl+c", "cancel a turn, or exit when idle"],
+      ["ctrl+d", "exit"],
+      ["ctrl+l", "redraw the screen"],
+      ["↑ / ↓", "prompt history"],
+    ]) {
+      transcript.notice(`  ${color("cyan", key.padEnd(30))}${color("dim", what)}`, "text");
+    }
+  },
+
+  newSession() {
+    if (session) session.reset({ reason: "new session requested" }).catch(() => {});
+    session = null;
+    firstUserMessage = null;
+    pendingRequests = [];
+    transcript.clear();
+    footer.reset();
+    footer.setSessionId(null);
+    handleEvent.resetSeen();
+    transcript.notice("— new session —", "success");
+  },
+
+  listSessions() {
+    const list = loadSessions();
+    if (list.length === 0) {
+      transcript.notice("(no saved sessions yet)", "muted");
+      return;
+    }
+    list.forEach((s, i) => {
+      const when = new Date(s.ts ?? Date.now()).toISOString().slice(0, 16).replace("T", " ");
+      transcript.notice(
+        `${String(i + 1).padStart(2)} ${color("muted", s.id.slice(0, 12))} ${color("dim", when)} ${s.label ?? ""}`,
+        "text",
+      );
+    });
+    transcript.notice("/resume <number|id-prefix> to reopen one", "dim");
+  },
+
+  async resume(arg) {
+    const target = findSession(arg);
+    if (!target) {
+      transcript.notice(
+        loadSessions().length === 0
+          ? "(no saved sessions to resume)"
+          : `no session matching "${arg ?? ""}" — try /sessions`,
+        "warning",
+      );
+      return;
+    }
+    try {
+      transcript.clear();
+      footer.reset();
+      handleEvent.resetSeen();
+      transcript.notice(`↩ resuming ${target.id.slice(0, 12)} · ${target.label ?? ""}`, "cyan");
+      status.set("loading history", { busy: true });
+
+      // Replay from the start so the transcript matches the session, then
+      // attach at the snapshot's cursor to follow only what comes next.
+      const snapshot = await client.sessions.attach(target.id, { streamIndex: 0 }).snapshot();
+      for (const event of snapshot.events) handleEvent(event);
+      session = client.sessions.attach(target.id, {
+        streamIndex: snapshot.session.streamIndex,
+      });
+      footer.setSessionId(target.id);
+      firstUserMessage = target.label ?? null;
+      setBusy(false);
+      status.clear();
+      transcript.notice("— resumed —", "success");
+    } catch (err) {
+      transcript.notice(`✗ resume failed: ${err?.message ?? err}`, "error");
+      session = null;
+      status.clear();
+    }
+  },
+
+  // Model and effort are baked into the build by `eve build` (verified: the built
+  // server ignores env overrides), so these report what the server compiled in.
+  showModel() {
+    transcript.notice(`model ${color("accent", footer.model || DEFAULT_MODEL)}`, "text");
+    transcript.notice("baked in at build time — edit agent/agent.ts and rebuild to change", "dim");
+  },
+
+  showEffort() {
+    transcript.notice(`reasoning effort ${color("accent", footer.effort || DEFAULT_EFFORT)}`, "text");
+    transcript.notice("baked in at build time — edit agent/agent.ts and rebuild to change", "dim");
+  },
+
+  setShowReasoning(arg) {
+    const next = parseToggle(arg, prefs.showReasoning);
+    if (next === null) {
+      transcript.notice(`unknown value "${arg}" — use on or off`, "warning");
+      return;
+    }
+    prefs = savePrefs({ showReasoning: next });
+    transcript.setShowReasoning(next);
+    transcript.notice(`reasoning traces ${next ? "shown" : "hidden"}`, "success");
+  },
+
+  setExpanded(arg) {
+    const next = parseToggle(arg, prefs.expandTools);
+    if (next === null) {
+      transcript.notice(`unknown value "${arg}" — use on or off`, "warning");
+      return;
+    }
+    prefs = savePrefs({ expandTools: next });
+    transcript.setExpanded(next);
+    transcript.notice(`tool output ${next ? "expanded" : "collapsed"}`, "success");
+  },
+
+  async listTools() {
+    try {
+      const info = await client.info();
+      const available = info?.tools?.available ?? [];
+      if (available.length === 0) {
+        transcript.notice("(no tools reported)", "muted");
+        return;
+      }
+      transcript.notice(`${available.length} tools`, "accent");
+      for (const tool of available) {
+        transcript.notice(
+          `  ${color("cyan", tool.name.padEnd(14))}${color("dim", tool.description?.split("\n")[0] ?? "")}`,
+          "text",
+        );
+      }
+    } catch (err) {
+      transcript.notice(`✗ could not read tools: ${err?.message ?? err}`, "error");
+    }
+  },
+
+  async compact() {
+    if (!session) {
+      transcript.notice("(no active session to compact)", "muted");
+      return;
+    }
+    status.set("compacting", { busy: true });
+    setBusy(true);
+    try {
+      const res = await session.compact();
+      if (res.status !== "accepted") {
+        transcript.notice(`(compaction ${res.status})`, "muted");
+        return;
+      }
+      await followToBoundary();
+    } catch (err) {
+      transcript.notice(`✗ compact failed: ${err?.message ?? err}`, "error");
+    } finally {
+      setBusy(false);
+      status.clear();
+    }
+  },
+
+  async clearHistory() {
+    if (!session) {
+      transcript.notice("(no active session to clear)", "muted");
+      return;
+    }
+    status.set("clearing history", { busy: true });
+    setBusy(true);
+    try {
+      const res = await session.clear();
+      if (res.status === "no_active_session") {
+        transcript.notice("(no active session)", "muted");
+        return;
+      }
+      await followToBoundary();
+      transcript.clear();
+      footer.reset();
+      transcript.notice("— history cleared —", "success");
+    } catch (err) {
+      transcript.notice(`✗ clear failed: ${err?.message ?? err}`, "error");
+    } finally {
+      setBusy(false);
+      status.clear();
+    }
+  },
+
+  cancel() {
+    if (!busy) {
+      transcript.notice("(nothing to cancel)", "muted");
+      return;
+    }
+    status.set("cancelling", { busy: true });
+    session?.cancel().catch((err) => {
+      transcript.notice(`✗ cancel failed: ${err?.message ?? err}`, "error");
+    });
+  },
+
+  quit,
+};
 
 async function runCommand(raw) {
-  const [name, ...rest] = raw.slice(1).trim().split(/\s+/);
-  const arg = rest.join(" ");
-  switch (name) {
-    case "help":
-      cmdHelp();
-      break;
-    case "sessions":
-      cmdSessions();
-      break;
-    case "resume":
-      await cmdResume(arg);
-      break;
-    case "compact":
-      await cmdCompact();
-      break;
-    case "clear":
-      await cmdClear();
-      break;
-    case "new":
-      cmdNew();
-      break;
-    case "cancel":
-      if (busy) {
-        appendChat("… cancelling", "yellow");
-        session?.cancel().catch(() => {});
-      } else {
-        appendChat("(nothing to cancel)", "gray");
-      }
-      break;
-    case "quit":
-    case "exit":
-      await quit();
-      break;
-    default:
-      appendChat(`unknown command /${name} — try /help`, "red");
+  const parsed = parseCommand(raw);
+  if (!parsed) return;
+  const cmd = commands.find((c) => c.name === parsed.name);
+  if (!cmd) {
+    transcript.notice(`unknown command /${parsed.name} — try /help`, "warning");
+    return;
   }
+  try {
+    await cmd.run(parsed.arg);
+  } catch (err) {
+    transcript.notice(`✗ /${parsed.name} failed: ${err?.message ?? err}`, "error");
+  }
+  requestRender();
 }
 
-async function quit() {
+function quit() {
+  if (spinnerTimer) clearInterval(spinnerTimer);
   try {
     tui?.stop();
   } catch {
-    /* ignore */
+    /* the terminal is being torn down anyway */
   }
   process.exit(0);
 }
@@ -457,34 +441,61 @@ async function quit() {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-let footerModel = "";
+function editorTheme() {
+  return {
+    borderColor: (t) => color("borderMuted", t),
+    selectList: {
+      selectedPrefix: (t) => color("accent", t),
+      selectedText: (t) => color("accent", sty.bold(t)),
+      description: (t) => color("dim", t),
+      scrollInfo: (t) => color("dim", t),
+      noMatch: (t) => color("muted", t),
+    },
+  };
+}
 
 async function main() {
-  if (!SERVER_URL) {
+  if (!serverUrl) {
     console.error("eve-coder TUI: EVE_CODER_SERVER_URL is required.");
     process.exit(1);
   }
-  client = new Client({ host: SERVER_URL });
 
+  client = new Client({ host: serverUrl });
+  let info = null;
   try {
     await client.health();
-    const info = await client.info().catch(() => null);
-    footerModel = info?.agent?.model?.id ?? "";
+    info = await client.info().catch(() => null);
   } catch (err) {
-    console.error(`eve-coder TUI: cannot reach eve server at ${SERVER_URL}: ${err?.message ?? err}`);
+    console.error(`eve-coder TUI: cannot reach eve server at ${serverUrl}: ${err?.message ?? err}`);
     process.exit(1);
   }
 
-  const terminal = new ProcessTerminal();
+  terminal = new ProcessTerminal();
   tui = new TuiMainScreen(terminal, true, join(stateDir(), "logs"));
 
-  chatContainer = new Container();
-  input = new Input();
-  input.onSubmit = async (value) => {
-    const text = value.trim();
+  transcript = new Transcript(requestRender);
+  transcript.showReasoning = prefs.showReasoning;
+  transcript.expanded = prefs.expandTools;
+
+  // The server is authoritative for both: `model` and `reasoning` are static
+  // agent fields it resolved at boot from the launcher's flags.
+  const model = info?.agent?.model?.id ?? DEFAULT_MODEL;
+  const effort = info?.agent?.model?.reasoning ?? DEFAULT_EFFORT;
+  footer = new Footer({ model, effort, workspace: WORKSPACE });
+  if (info?.agent?.model?.contextWindowTokens) {
+    footer.setContextWindow(info.agent.model.contextWindowTokens);
+  }
+  status = new StatusLine();
+  handleEvent = createEventHandler(app);
+  commands = buildCommands(app);
+
+  editor = new Editor(tui, editorTheme(), { paddingX: 1 });
+  editor.setAutocompleteProvider(new CombinedAutocompleteProvider(commands, WORKSPACE, null));
+  editor.onSubmit = async (value) => {
+    const text = String(value ?? "").trim();
     if (text.length === 0) return;
-    input.setValue("");
-    if (awaitingInput) {
+    editor.addToHistory(text);
+    if (pendingRequests.length > 0) {
       await answerPendingInput(text);
       return;
     }
@@ -494,61 +505,53 @@ async function main() {
     }
     await sendTurn(text);
   };
-  input.onEscape = () => input.setValue("");
 
-  tui.addChild(chatContainer);
-  tui.addChild(input);
-  statusLine = new Text("", 0, 0);
-  tui.addChild(statusLine);
+  tui.addChild(transcript.container);
+  tui.addChild(status);
+  tui.addChild(editor);
+  tui.addChild(footer);
 
   tui.addInputListener((data) => {
-    if (matchesKey(data, "ctrl+c")) {
+    // Let the editor own escape while its completion popup is open.
+    if (matchesKey(data, "escape") && !editor.isShowingAutocomplete()) {
       if (busy) {
-        appendChat("… cancelling", "yellow");
-        session?.cancel().catch(() => {});
-      } else {
-        quit();
+        app.cancel();
+        return { consume: true };
       }
+      return undefined;
+    }
+    if (matchesKey(data, "ctrl+c")) {
+      if (busy) app.cancel();
+      else quit();
       return { consume: true };
     }
     if (matchesKey(data, "ctrl+d")) {
-      quit();
+      if (editor.getText().length === 0) quit();
       return { consume: true };
     }
     if (matchesKey(data, "ctrl+l")) {
       terminal.clearScreen();
+      requestRender();
       return { consume: true };
     }
-    if (matchesKey(data, "tab")) {
-      const v = input.getValue();
-      if (v.startsWith("/")) {
-        const prefix = v.toLowerCase();
-        const cands = COMMANDS.filter((c) => c.startsWith(prefix));
-        if (cands.length === 1) {
-          input.setValue(`${cands[0]} `);
-          return { consume: true };
-        }
-        if (cands.length > 1) {
-          setStatus(color("muted", `completions: ${cands.join("  ")}`));
-          return { consume: true };
-        }
-      }
+    if (matchesKey(data, "ctrl+o")) {
+      app.setExpanded(!prefs.expandTools);
+      return { consume: true };
+    }
+    if (matchesKey(data, "ctrl+r")) {
+      app.setShowReasoning(!prefs.showReasoning);
+      return { consume: true };
     }
     return undefined;
   });
 
-  tui.setFocus(input);
+  tui.setFocus(editor);
   tui.start();
 
-  setStatus(
-    `${color("accent", sty.bold("eve-coder"))} ${color("dim", `· ${footerModel || "?"} · ${WORKSPACE || "no workspace"}`)} ${color("muted", "/help")}`,
-  );
-  appendChat(`eve-coder — local coding agent (${footerModel || "model"}). Type /help for commands.`, "green");
-  tui.requestRender();
+  transcript.append(new Text(banner(model, effort, WORKSPACE), 1, 0));
+  requestRender();
 
-  for (const sig of ["SIGINT", "SIGTERM"]) {
-    process.on(sig, () => quit());
-  }
+  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => quit());
 }
 
 main().catch((err) => {

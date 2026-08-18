@@ -12,5 +12,10 @@ export default defineAgent({
       },
     },
   },
+  // NOTE: this whole config is evaluated by `eve build` and baked into
+  // .output/server as a static manifest — reading process.env here does nothing
+  // at runtime (verified: EVE_CODER_REASONING/EVE_CODER_MODEL are ignored by the
+  // built server). To change the model or effort, edit this file and rebuild, or
+  // run `eve set --reasoning <level>` followed by `npm run build`.
   reasoning: "xhigh",
 });

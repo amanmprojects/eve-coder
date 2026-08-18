@@ -30,6 +30,26 @@ const BUILT_OUTPUT = join(APP_ROOT, ".output");
 const SERVER_ENTRY = join(BUILT_OUTPUT, "server", "index.mjs");
 const URL_RE = /http:\/\/127\.0\.0\.1:\d+/;
 
+const USAGE = `eve-coder — a local coding agent in your terminal
+
+usage: eve-coder [-h|--help]
+
+The model (zai/glm-5.2 via blackbox) and reasoning effort (xhigh) are baked into
+the build by \`eve build\`, so they are not runtime options. To change them, edit
+agent/agent.ts and rebuild.
+
+Run it from the directory you want the agent to work in.
+`;
+
+for (const arg of process.argv.slice(2)) {
+  if (arg === "-h" || arg === "--help") {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
+  console.error(`eve-coder: unknown option "${arg}".\n\n${USAGE}`);
+  process.exit(2);
+}
+
 // 2. Optional user config file (~/.config/eve-coder/env or ~/.eve-coder.env) —
 //    a place to keep AI_GATEWAY_API_KEY without editing your shell profile.
 //    Keys already in the environment win (eve also prefers process.env).
