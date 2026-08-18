@@ -18,6 +18,7 @@
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +70,20 @@ function appendLog(file, text) {
   }
 }
 
+// Pick a real free port: the server reads PORT/NITRO_PORT directly, and the
+// workflow queue derives its callback URL from PORT — passing 0 would make it
+// fetch http://localhost:0 and fail every queue delivery.
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
 loadUserEnv();
 if (!existsSync(SERVER_ENTRY)) {
   console.error(
@@ -83,13 +98,14 @@ if (!existsSync(SERVER_ENTRY)) {
 // state directory as the server log rather than the (root-owned) package dir.
 const logFile = serverLogPath();
 const serverCwd = dirname(logFile);
+const port = await findFreePort();
 const serverEnv = {
   ...process.env,
   LOCAL_CODER_ROOT: workspaceRoot,
   HOST: "127.0.0.1",
   NITRO_HOST: "127.0.0.1",
-  PORT: "0",
-  NITRO_PORT: "0",
+  PORT: String(port),
+  NITRO_PORT: String(port),
 };
 const server = spawn(process.execPath, [SERVER_ENTRY], {
   cwd: serverCwd,
