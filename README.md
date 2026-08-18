@@ -61,9 +61,32 @@ Server logs live in `~/.local/state/eve-coder/server.log`; remembered sessions
 live in `~/.local/state/eve-coder/sessions.json`.
 
 The TUI uses **pi's dark theme** (the `dark.json` palette from the pi-coding-agent)
-and supports **Tab completion** for slash commands (`/res` + Tab → `/resume`).
-The agent's system prompt follows pi's structure (identity, available tools,
-guidelines, working directory) so it self-identifies as `eve-coder`.
+and mirrors pi's shell layout: startup header with keybinding hints, pi-style
+user messages, background-painted tool-execution blocks, a live status area
+(spinners/countdowns), and a footer with workspace + token stats + model.
+
+**Auto-retry with exponential backoff.** Transient model-call failures
+(gateway `429`/rate limits, `5xx`, overloads, network drops, truncated
+streams) are retried automatically up to 3 times with exponential backoff
+(`2s → 4s → 8s`, pi's policy), showing a live countdown in the status area
+(`Retrying (2/3) in 8s…`). `Escape` (or `Ctrl+C`) aborts the backoff wait.
+Non-transient errors (quota/billing/auth) are **not** retried — they surface
+immediately with a hint.
+
+**Keybindings (pi-style):**
+
+| Key | Action |
+| --- | --- |
+| `Escape` | interrupt the running turn (or abort a retry); clears the editor when idle |
+| `Ctrl+C` | interrupt the running turn; clears the editor when idle (twice exits) |
+| `Ctrl+D` | exit |
+| `Ctrl+O` | expand/truncate tool output |
+| `Tab` | complete slash commands (`/res` + Tab → `/resume`) |
+
+While a turn is running, submitting a new message shows a warning instead of
+silently cancelling the running turn — and resuming a session shows a compact
+history summary rather than replaying every past event — so stray
+`⏹ cancelled` / `✗ turn failed` lines no longer appear out of nowhere.
 
 ### TUI commands
 
@@ -74,8 +97,8 @@ guidelines, working directory) so it self-identifies as `eve-coder`.
 | `/sessions` | list saved sessions |
 | `/compact` | compact this session's context |
 | `/clear` | clear this session's history (keeps its identity) |
-| `/cancel` | stop the current turn (Ctrl+C also works while working) |
-| `/quit` | exit (Ctrl+D also works) |
+| `/cancel` | stop the current turn |
+| `/quit` | exit |
 
 The eve HTTP channel accepts anonymous requests on the loopback interface
 (`none()` as a final auth fallback). That is safe as long as the server stays

@@ -20,6 +20,7 @@ import {
   ProcessTerminal,
   Text,
   TuiMainScreen,
+  isKeyRelease,
   matchesKey,
 } from "@earendil-works/pi-tui";
 import { color, sty } from "./theme.mjs";
@@ -512,6 +513,11 @@ async function main() {
   tui.addChild(footer);
 
   tui.addInputListener((data) => {
+    // Under the Kitty keyboard protocol, each keypress also emits a release
+    // event that matchesKey() matches (by design — see isKeyRelease()). The
+    // actions below are press-only, so drop releases here and let the TUI's
+    // central release filter handle them.
+    if (isKeyRelease(data)) return undefined;
     // Let the editor own escape while its completion popup is open.
     if (matchesKey(data, "escape") && !editor.isShowingAutocomplete()) {
       if (busy) {

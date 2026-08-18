@@ -30,6 +30,7 @@
     "@vercel/connect": "0.4.3",
     "ai": "^7.0.58",
     "eve": "^0.38.3",
+    "eve-coder": "file:eve-coder-1.2.0.tgz",
     "zod": "4.4.3"
   },
   "devDependencies": {
