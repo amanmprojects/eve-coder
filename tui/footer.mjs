@@ -7,6 +7,11 @@
  * `step.started.modelId` (the model the server actually called) rather than
  * `client.info()`, which reports `routing: "dynamic"` with no id once the agent
  * selects its model at runtime.
+ *
+ * Token accounting: eve forwards `inputTokens` (the AI SDK grand total) plus
+ * `cacheReadTokens`/`cacheWriteTokens` (its `inputTokenDetails` subsets). The
+ * prompt size is therefore just `inputTokens` — never the sum, which would
+ * double-count the cached portion and make the context percentage lurch.
  */
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { color, effortColor, sty } from "./theme.mjs";
@@ -42,14 +47,19 @@ export function addUsage(totals, usage) {
   return totals;
 }
 
-/** Prompt size for the step: everything the provider billed as input. */
+/**
+ * Prompt size for the step: the total input tokens the provider billed.
+ *
+ * `inputTokens` is the AI SDK's grand total; `cacheReadTokens` and
+ * `cacheWriteTokens` are `inputTokenDetails` — i.e. subsets of that total, not
+ * additions to it. Summing them would double-count the cached portion, which
+ * is exactly what made the context percentage swing up and down between steps
+ * (the cached fraction varies per call). The honest prompt size is just
+ * `inputTokens`.
+ */
 export function promptTokens(usage) {
   if (!usage) return 0;
-  return (
-    (Number(usage.inputTokens) || 0) +
-    (Number(usage.cacheReadTokens) || 0) +
-    (Number(usage.cacheWriteTokens) || 0)
-  );
+  return Number(usage.inputTokens) || 0;
 }
 
 /**
@@ -92,18 +102,29 @@ export class Footer {
     this.cacheHitRate = undefined;
   }
 
-  /** Record a completed step's usage. */
+  /**
+   * Record a completed step's usage.
+   *
+   * `contextTokens` is the latest step's prompt size — i.e. the current context
+   * the model was just handed — so the footer's percentage reflects how full
+   * the window is right now, not a running sum (which would dwarf the window).
+   *
+   * `cacheHitRate` is *cumulative* (total cache-read ÷ total input across the
+   * whole session), not per-step. A per-step rate is useless in the footer
+   * because it swings from ~0% on the first call of a turn to ~90% on the next;
+   * the cumulative rate is stable and says something meaningful: what fraction
+   * of everything billed so far was served from cache.
+   */
   recordStep(usage) {
     addUsage(this.totals, usage);
     const prompt = promptTokens(usage);
-    if (prompt > 0) {
-      this.contextTokens = prompt;
-      const cacheRead = Number(usage?.cacheReadTokens) || 0;
-      this.cacheHitRate = (cacheRead / prompt) * 100;
+    if (prompt > 0) this.contextTokens = prompt;
+    if (this.totals.input > 0) {
+      this.cacheHitRate = (this.totals.cacheRead / this.totals.input) * 100;
     }
   }
 
-  /** `↑20k ↓3.4k R122k W2.1k CH97.6% $0.008 122k/1.0M` */
+  /** `↑20k ↓3.4k R122k W2.1k CH97.6% $0.008 122k/262k` */
   statsLeft() {
     const t = this.totals;
     const parts = [];
@@ -189,7 +210,7 @@ export class StatusLine {
     if (!this.message) return [];
     const lead = this.busy ? `${color("accent", spinnerChar())} ` : "";
     const detail = this.detail ? ` ${color("dim", this.detail)}` : "";
-    return [truncateToWidth(` ${lead}${this.message}${detail}`, width, color("dim", "…"))];
+    return ["", truncateToWidth(` ${lead}${this.message}${detail}`, width, color("dim", "…"))];
   }
 }
 

@@ -136,7 +136,10 @@ function runCommand(
     }
 
     function handleAbort() {
-      timedOut = false;
+      // Don't clobber `timedOut`: a timeout may have already fired and be in
+      // its SIGTERM→SIGKILL grace window when the user aborts. The two flags
+      // are independent — `aborted` reflects the user signal, `timedOut`
+      // reflects the timer, and both can legitimately be true at once.
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), 2000).unref();
     }

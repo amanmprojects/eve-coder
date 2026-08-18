@@ -3,7 +3,7 @@
 //   packages/coding-agent/src/modes/interactive/theme/dark.json
 // Rendered without chalk so the TUI has zero color deps at runtime.
 
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const RESET = "\x1b[0m";
 
@@ -59,6 +59,7 @@ export const theme = {
   border: "blue",
   borderAccent: "cyan",
   borderMuted: "darkGray",
+  scrollbarThumb: "selectedBg",
   userBg: "userMsgBg",
   userMessageBg: "userMsgBg",
   customMessageBg: "customMsgBg",
@@ -156,12 +157,31 @@ export function paintOn(bgKey, text, fgKey) {
 }
 
 /**
+ * Style the fullscreen ScrollView's scrollbar thumb.
+ *
+ * Mirrors pi's `theme.bg("scrollbarThumb", text)`: a background color on the
+ * thumb cell, reset with `\x1b[49m` (default bg) so the rest of the line is
+ * preserved by the layout compositor.
+ */
+export function scrollbarStyle(text) {
+  return `${bgCode("scrollbarThumb")}${text}\x1b[49m`;
+}
+
+/**
  * Pad `line` to `width` visible columns and paint it with `bgFn`.
  * Mirrors pi-tui's internal `applyBackgroundToLine`, which is not exported.
+ *
+ * Defensive truncation: the differential renderer *throws* (killing the TUI) if
+ * any rendered line exceeds the terminal width. Body lines come pre-wrapped, but
+ * an unwrappable token in tool output could still overflow — truncate rather
+ * than crash. `visibleWidth` is already computed for the padding, so this is
+ * free in the common (fits) case.
  */
 export function fillLine(line, width, bgFn) {
-  const padding = " ".repeat(Math.max(0, width - visibleWidth(line)));
-  return bgFn(line + padding);
+  const vw = visibleWidth(line);
+  const fitted = vw > width ? truncateToWidth(line, width, "") : line;
+  const padding = " ".repeat(Math.max(0, width - Math.min(vw, width)));
+  return bgFn(fitted + padding);
 }
 
 // Named SGR helpers (compatible with the old `sty` API).

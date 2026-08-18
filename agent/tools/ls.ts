@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { lstat, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -38,19 +38,25 @@ Relative paths resolve against the workspace root. Use this to explore the files
     const entries = [];
     for (const name of names.slice(0, maxEntries)) {
       const childAbs = join(abs, name);
-      const child = await stat(childAbs).catch(() => null);
-      const kind = child?.isDirectory()
-        ? "dir"
-        : child?.isSymbolicLink()
-          ? "link"
-          : child?.isFile()
+      // lstat() does not follow symlinks, so a symlink is reported as a link
+      // rather than the type of its target. stat() would follow the link and
+      // make isSymbolicLink() always false (and throw on a broken link).
+      const lstatInfo = await lstat(childAbs).catch(() => null);
+      // Follow the link to report the target's size for file links (matching
+      // `ls -l`, which shows the target). A broken link has no target.
+      const targetInfo = lstatInfo?.isSymbolicLink() ? await stat(childAbs).catch(() => null) : lstatInfo;
+      const kind = lstatInfo?.isSymbolicLink()
+        ? "link"
+        : lstatInfo?.isDirectory()
+          ? "dir"
+          : lstatInfo?.isFile()
             ? "file"
             : "other";
       entries.push({
         name,
         kind,
         isDirectory: kind === "dir",
-        size: kind === "dir" || kind === "link" ? null : child ? child.size : null,
+        size: kind === "dir" || kind === "link" ? null : targetInfo ? targetInfo.size : null,
       });
     }
 

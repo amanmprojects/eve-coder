@@ -18,12 +18,14 @@ import {
   CombinedAutocompleteProvider,
   Editor,
   ProcessTerminal,
+  ScrollView,
   Text,
-  TuiMainScreen,
+  TuiAltScreen,
+  VStack,
   isKeyRelease,
   matchesKey,
 } from "@earendil-works/pi-tui";
-import { color, sty } from "./theme.mjs";
+import { color, scrollbarStyle, sty } from "./theme.mjs";
 import { DEFAULT_EFFORT, DEFAULT_MODEL, loadPrefs, savePrefs, stateDir } from "./runtime-config.mjs";
 import { Transcript, spinner } from "./transcript.mjs";
 import { Footer, StatusLine, banner } from "./footer.mjs";
@@ -227,6 +229,9 @@ const app = {
       ["ctrl+c", "cancel a turn, or exit when idle"],
       ["ctrl+d", "exit"],
       ["ctrl+l", "redraw the screen"],
+      ["pgup / pgdn", "scroll the transcript"],
+      ["home / end", "jump to top / bottom"],
+      ["ctrl+shift+f", "search the transcript"],
       ["↑ / ↓", "prompt history"],
     ]) {
       transcript.notice(`  ${color("cyan", key.padEnd(30))}${color("dim", what)}`, "text");
@@ -470,7 +475,10 @@ async function main() {
   }
 
   terminal = new ProcessTerminal();
-  tui = new TuiMainScreen(terminal, true, join(stateDir(), "logs"));
+  // Alt-screen + ScrollView (the architecture pi uses): the TUI owns a
+  // fixed-size viewport and diffs only the visible rows each frame, so a long
+  // session never produces an O(transcript) render or full-screen rewrite.
+  tui = new TuiAltScreen(terminal, true, join(stateDir(), "logs"));
 
   transcript = new Transcript(requestRender);
   transcript.showReasoning = prefs.showReasoning;
@@ -505,10 +513,25 @@ async function main() {
     await sendTurn(text);
   };
 
-  tui.addChild(transcript.container);
-  tui.addChild(status);
-  tui.addChild(editor);
-  tui.addChild(footer);
+  // The transcript is wrapped in a ScrollView so only the visible viewport is
+  // rendered and diffed. The dock (status → editor → footer) sits below at its
+  // natural height, growing/shrinking the transcript region to fill the rest.
+  // This mirrors pi's fullscreen layout root.
+  const transcriptScroll = new ScrollView(transcript.container, {
+    follow: "end",
+    primary: true,
+    overscroll: "chain",
+    scrollbar: "auto",
+    scrollbarStyle,
+  });
+  tui.setLayoutRoot(
+    new VStack([
+      { component: transcriptScroll, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+      { component: status, shrink: 1, minSize: 0 },
+      { component: editor, shrink: 1, minSize: 3 },
+      { component: footer, shrink: 1, minSize: 1 },
+    ]),
+  );
 
   tui.addInputListener((data) => {
     // Under the Kitty keyboard protocol, each keypress also emits a release
@@ -534,8 +557,10 @@ async function main() {
       return { consume: true };
     }
     if (matchesKey(data, "ctrl+l")) {
-      terminal.clearScreen();
-      requestRender();
+      // Force a full redraw: reset the viewport render state and repaint
+      // immediately. (terminal.clearScreen() would desync the alt-screen's
+      // previousScreen cache.)
+      tui?.renderNow(true);
       return { consume: true };
     }
     if (matchesKey(data, "ctrl+o")) {

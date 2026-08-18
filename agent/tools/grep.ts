@@ -132,7 +132,10 @@ cross-line patterns. Long matching lines are truncated. Ignores node_modules, .g
 
     const matchLines: MatchLine[] = [];
     let total = 0;
-    let examined = 0;
+    // Count files that had at least one match, matching the ripgrep path's
+    // `filesExamined` semantics (distinct files with matches) so the TUI's
+    // "N matches in M files" label means the same thing under either engine.
+    let filesWithMatches = 0;
 
     for (const target of targets) {
       if (total >= maxResults) break;
@@ -140,9 +143,9 @@ cross-line patterns. Long matching lines are truncated. Ignores node_modules, .g
       const rel = displayPath(target);
       const text = await readTextFileCap(target);
       if (text === null) continue;
-      examined++;
       const lines = text.split("\n");
       if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+      const fileMatched = { value: false };
 
       if (contextLines > 0) {
         // Collect match line numbers, then emit merged context windows.
@@ -150,6 +153,7 @@ cross-line patterns. Long matching lines are truncated. Ignores node_modules, .g
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i])) {
             matchNos.push(i + 1);
+            fileMatched.value = true;
             total++;
             if (total >= maxResults) break;
           }
@@ -165,11 +169,13 @@ cross-line patterns. Long matching lines are truncated. Ignores node_modules, .g
           lineNo++;
           if (re.test(line)) {
             matchLines.push({ file: rel, lineNo, text: line, isMatch: true });
+            fileMatched.value = true;
             total++;
             if (total >= maxResults) break;
           }
         }
       }
+      if (fileMatched.value) filesWithMatches++;
     }
 
     const hits = groupHits(matchLines, markTruncated);
@@ -177,7 +183,7 @@ cross-line patterns. Long matching lines are truncated. Ignores node_modules, .g
       pattern,
       baseDir: displayPath(baseAbs),
       engine: "js",
-      filesExamined: examined,
+      filesExamined: filesWithMatches,
       matches: total,
       maxResultsReached: total >= maxResults,
       linesTruncated: linesWereTruncated,

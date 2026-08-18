@@ -65,6 +65,15 @@ and mirrors pi's shell layout: startup header with keybinding hints, pi-style
 user messages, background-painted tool-execution blocks, a live status area
 (spinners/countdowns), and a footer with workspace + token stats + model.
 
+It runs in the terminal's **alternate screen buffer** (like pi's fullscreen
+mode), with the transcript wrapped in a `ScrollView`. Only the visible
+viewport is diffed and painted each frame, so performance stays bounded by the
+viewport height rather than the full session length — long sessions no longer
+trigger O(transcript) renders or full-screen rewrites. Because the alt screen
+has no scrollback, use `PageUp`/`PageDown`, `Home`/`End`, the mouse wheel, or
+`Ctrl+Shift+F` to navigate the transcript instead of the terminal's own
+scrollbar.
+
 **Auto-retry with exponential backoff.** Transient model-call failures
 (gateway `429`/rate limits, `5xx`, overloads, network drops, truncated
 streams) are retried automatically up to 3 times with exponential backoff
@@ -81,7 +90,13 @@ immediately with a hint.
 | `Ctrl+C` | interrupt the running turn; clears the editor when idle (twice exits) |
 | `Ctrl+D` | exit |
 | `Ctrl+O` | expand/truncate tool output |
+| `Ctrl+R` | toggle reasoning trace visibility |
+| `Ctrl+L` | force a full screen redraw |
 | `Tab` | complete slash commands (`/res` + Tab → `/resume`) |
+| `PageUp` / `PageDown` | scroll the transcript viewport one page |
+| `Home` / `End` | jump to the top / bottom of the transcript |
+| `Ctrl+Shift+F` | search the transcript |
+| mouse wheel / drag | scroll and select text in the transcript |
 
 While a turn is running, submitting a new message shows a warning instead of
 silently cancelling the running turn — and resuming a session shows a compact

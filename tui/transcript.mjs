@@ -33,6 +33,16 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 const PREVIEW_LINES = 12;
 /** Wrapped-line budget for a collapsed reasoning block. */
 const REASONING_PREVIEW_LINES = 8;
+/**
+ * Maximum number of *raw* reasoning lines parsed as markdown per delta while
+ * collapsed. The collapsed block only ever shows the last
+ * `REASONING_PREVIEW_LINES` wrapped lines, so feeding the whole trace through
+ * the markdown parser on every token is pure waste — and on a multi-thousand-
+ * line trace it froze the TUI for over a second per render. Rendering only a
+ * bounded tail makes the per-token cost constant regardless of trace length.
+ * Expanded view still parses the full text (user-initiated and rare).
+ */
+const REASONING_TAIL_RAW_LINES = 48;
 
 /** Shared animation clock so one timer drives every pending block. */
 export const spinner = { frame: 0 };
@@ -282,32 +292,53 @@ export class ReasoningBlock {
       const label = this.done ? "✻ reasoning hidden (/reasoning to show)" : "✻ thinking…";
       lines = new Text(color("thinkingText", sty.italic(label)), 1, 0).render(width);
     } else {
-      // Reasoning is prose, but models emit markdown in it; render it as
-      // markdown with an italic dim default style, the way pi does.
-      const md = new Markdown(this.text, 1, 0, this.mdTheme, {
-        color: (t) => color("thinkingText", t),
-        italic: true,
-      });
-      const rendered = md.render(width);
-      if (this.expanded || rendered.length <= REASONING_PREVIEW_LINES) {
-        lines = rendered;
-      } else {
-        const skipped = rendered.length - REASONING_PREVIEW_LINES;
-        lines = [
-          ...rendered.slice(rendered.length - REASONING_PREVIEW_LINES),
-          ...new Text(
-            color("dim", `… (${skipped} earlier reasoning line${skipped === 1 ? "" : "s"}, ctrl+o to expand)`),
-            1,
-            0,
-          ).render(width),
-        ];
-      }
+      lines = this.renderReasoning(width);
     }
 
     this.cachedWidth = width;
     this.cachedText = this.text;
     this.cachedLines = lines;
     return lines;
+  }
+
+  /**
+   * Render the visible reasoning trace as markdown.
+   *
+   * Reasoning is prose, but models emit markdown in it; it is rendered with an
+   * italic dim default style, the way pi does. The expensive part is
+   * `Markdown.render`, which re-parses its whole input on every change. While
+   * streaming, the block only ever shows the last `REASONING_PREVIEW_LINES`
+   * visual lines, so when collapsed we parse only a bounded tail of the raw
+   * text — keeping the per-token cost constant regardless of how long the
+   * trace has grown. Expanding (`ctrl+o`) still renders the full text.
+   */
+  renderReasoning(width) {
+    const rawLines = this.text.split("\n");
+    // Short traces, and any expanded view, render the whole text.
+    const source =
+      this.expanded || rawLines.length <= REASONING_TAIL_RAW_LINES
+        ? this.text
+        : rawLines.slice(rawLines.length - REASONING_TAIL_RAW_LINES).join("\n");
+
+    const rendered = new Markdown(source, 1, 0, this.mdTheme, {
+      color: (t) => color("thinkingText", t),
+      italic: true,
+    }).render(width);
+
+    if (this.expanded || rendered.length <= REASONING_PREVIEW_LINES) {
+      return rendered;
+    }
+    // Count hidden lines from the raw trace so the summary is cheap to compute
+    // (a full visual re-render just to count would reintroduce the cliff).
+    const skipped = Math.max(0, rawLines.length - REASONING_PREVIEW_LINES);
+    return [
+      ...rendered.slice(rendered.length - REASONING_PREVIEW_LINES),
+      ...new Text(
+        color("dim", `… (${skipped} earlier reasoning line${skipped === 1 ? "" : "s"}, ctrl+o to expand)`),
+        1,
+        0,
+      ).render(width),
+    ];
   }
 }
 
