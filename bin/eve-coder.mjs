@@ -150,11 +150,38 @@ function shutdownServer() {
   setTimeout(() => server.kill("SIGKILL"), 3000).unref();
 }
 
+// 3. Detect Bun — the OpenTUI TUI requires Bun ≥1.3.0 for native FFI support.
+//    The prebuilt server runs on Node.js; only the TUI needs Bun.
+function findBun() {
+  // Check PATH first
+  try {
+    const which = require("node:child_process").spawnSync("bun", ["--version"], { stdio: "pipe" });
+    if (which.status === 0) return "bun";
+  } catch {
+    /* not on PATH */
+  }
+  // Check ~/.bun/bin/bun
+  const homeBun = join(homedir(), ".bun", "bin", "bun");
+  if (existsSync(homeBun)) return homeBun;
+  return null;
+}
+
 function startTui() {
-  // Our pi-tui TUI talks to the prebuilt server over eve/client. It receives
-  // the server URL and workspace via the environment.
-  const tuiScript = join(APP_ROOT, "tui", "client.mjs");
-  tui = spawn(process.execPath, [tuiScript], {
+  const bunPath = findBun();
+  if (!bunPath) {
+    console.error(
+      "eve-coder: Bun is required for the TUI (≥1.3.0). Install it:\n" +
+        "  curl -fsSL https://bun.sh/install | bash\n" +
+        "Then run eve-coder again.",
+    );
+    shutdownServer();
+    process.exit(1);
+  }
+
+  // The OpenTUI React TUI talks to the prebuilt server over eve/client.
+  // It receives the server URL and workspace via the environment.
+  const tuiScript = join(APP_ROOT, "tui", "index.tsx");
+  tui = spawn(bunPath, [tuiScript], {
     cwd: APP_ROOT,
     env: { ...serverEnv, EVE_CODER_SERVER_URL: url },
     stdio: "inherit",

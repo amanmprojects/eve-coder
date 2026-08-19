@@ -9,7 +9,9 @@ import {
   restoreLineEndings,
   stripBom,
 } from "../lib/edit-diff.js";
+import { isBinaryFile } from "../lib/file-safety.js";
 import { withFileMutationQueue } from "../lib/file-mutation-queue.js";
+import { isBlockedDevicePath, isUNCPath } from "../lib/path-guards.js";
 import { displayPath, readTextFileCap, resolveToRoot } from "../lib/workspace.js";
 
 const editSchema = z.object({
@@ -38,10 +40,23 @@ resolve against the workspace root.`,
   }),
   async execute({ path, edits }) {
     const abs = resolveToRoot(path);
+
+    if (isUNCPath(abs)) {
+      throw new Error(`Cannot edit UNC path: ${path}. Use a local path instead.`);
+    }
+    if (await isBlockedDevicePath(abs)) {
+      throw new Error(`Cannot edit device file: ${path}. This file would block or produce infinite output.`);
+    }
+
     return withFileMutationQueue(abs, async () => {
       const info = await stat(abs).catch(() => null);
       if (!info) throw new Error(`File not found: ${path} (resolved to ${abs}).`);
       if (info.isDirectory()) throw new Error(`${path} is a directory, not a file.`);
+
+      if (await isBinaryFile(abs)) {
+        throw new Error(`${path} appears to be binary; edit_file only edits text files.`);
+      }
+
       const raw = await readTextFileCap(abs);
       if (raw === null) throw new Error(`${path} appears to be binary; edit_file only edits text files.`);
 

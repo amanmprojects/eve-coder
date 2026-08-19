@@ -1,7 +1,10 @@
+import { readdir } from "node:fs/promises";
+import * as path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { detectSupportedImageMimeType } from "../lib/image-detect.js";
+import { isBlockedDevicePath, isUNCPath } from "../lib/path-guards.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "../lib/truncate.js";
 import { displayPath, numberLines, resolveToRoot, workspaceRoot } from "../lib/workspace.js";
 
@@ -29,9 +32,19 @@ Use ls to list a directory instead of reading it.`,
   }),
   async execute({ path, offset, limit }) {
     const abs = resolveToRoot(path);
+
+    if (isUNCPath(abs)) {
+      throw new Error(`Cannot read UNC path: ${path}. Use a local path instead.`);
+    }
+    if (await isBlockedDevicePath(abs)) {
+      throw new Error(`Cannot read device file: ${path}. This file would block or produce infinite output.`);
+    }
+
     const info = await stat(abs).catch(() => null);
     if (!info) {
-      throw new Error(`File not found: ${path} (resolved to ${abs}). Use glob/ls to discover files.`);
+      const suggestion = await findSimilarFile(abs).catch(() => undefined);
+      const hint = suggestion ? ` Did you mean ${suggestion}?` : "";
+      throw new Error(`File not found: ${path} (resolved to ${abs}).${hint} Use glob/ls to discover files.`);
     }
     if (info.isDirectory()) {
       throw new Error(`${path} is a directory. Use ls to list its contents.`);
@@ -119,3 +132,35 @@ Use ls to list a directory instead of reading it.`,
     };
   },
 });
+
+/**
+ * Find a file with a similar name to the requested path, to suggest on ENOENT.
+ * Looks in the same directory for files that share a prefix or basename.
+ */
+async function findSimilarFile(targetPath: string): Promise<string | undefined> {
+  try {
+    const dir = path.dirname(targetPath);
+    const targetName = path.basename(targetPath).toLowerCase();
+    const dirStat = await stat(dir).catch(() => null);
+    if (!dirStat?.isDirectory()) return undefined;
+
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+
+    const similar = files.find((f) => {
+      const lower = f.toLowerCase();
+      return (
+        lower !== targetName &&
+        (lower.startsWith(targetName) ||
+          targetName.startsWith(lower) ||
+          lower.includes(targetName) ||
+          targetName.includes(lower) ||
+          path.basename(lower, path.extname(lower)) ===
+            path.basename(targetName, path.extname(targetName)))
+      );
+    });
+    return similar ? path.join(dir, similar) : undefined;
+  } catch {
+    return undefined;
+  }
+}

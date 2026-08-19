@@ -13,6 +13,43 @@ const COMBINED_TAIL = DEFAULT_MAX_BYTES * 2; // 100KB window kept to seed the fu
 const SPILL_THRESHOLD = DEFAULT_MAX_BYTES; // start spilling to a file past this
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // hard cap so a runaway command can't fill disk
 
+/** Patterns that indicate destructive, irreversible, or dangerous commands. */
+const DANGEROUS_PATTERNS = [
+  /\brm\s+(-[a-zA-Z]*)?r[a-zA-Z]*f?\s+\/(?:\S|$)/,
+  /\brm\s+(-[a-zA-Z]*)?f[a-zA-Z]*r?\s+\/(?:\S|$)/,
+  /\bmkfs\b/,
+  /\bdd\s+if=/,
+  /:\(\)\s*{\s*:\|:&\s*};/, // Fork bomb pattern
+  />\s*\/dev\/sd[a-z]/,
+  /\bchmod\s+(-R\s+)?777\s+\//,
+  /\bchown\s+(-R\s+)?.*\s+\//,
+  /\bwget\s+.*\|\s*(ba)?sh/,
+  /\bcurl\s+.*\|\s*(ba)?sh/,
+  /\bfork\s*bomb\b/i,
+  />\s*(\/etc\/passwd|\/etc\/shadow)/,
+];
+
+/** Command classification for output and safety reporting. */
+type CommandClassification = "read" | "search" | "mutating" | "unknown" | "refused";
+
+const READ_ONLY_PATTERNS = [
+  /^\s*(pwd|which|whereis|whoami|printenv|echo|date|uname|id|env)\b/i,
+  /^\s*(ls|tree|find|fd|stat|wc|head|tail|cat)\b/i,
+  /^\s*(grep|rg)\b/i,
+  /^\s*git\s+(status|diff|show|log|branch)\b/i,
+];
+
+const SEARCH_PATTERNS = [/^\s*(grep|rg|find|fd)\b/i];
+
+function classifyCommand(command: string): CommandClassification {
+  if (DANGEROUS_PATTERNS.some((p) => p.test(command))) return "refused";
+  if (SEARCH_PATTERNS.some((p) => p.test(command))) return "search";
+  if (READ_ONLY_PATTERNS.some((p) => p.test(command))) return "read";
+  return /\b(mv|cp|sed|perl|python|node|npm|pnpm|bun|git|touch|mkdir|chmod|chown)\b/i.test(command)
+    ? "mutating"
+    : "unknown";
+}
+
 export interface CommandResult {
   command: string;
   cwd: string;
@@ -24,6 +61,7 @@ export interface CommandResult {
   truncated: boolean;
   truncatedBy: "lines" | "bytes" | null;
   fullOutputPath?: string;
+  classification?: CommandClassification;
 }
 
 function keepTail(s: string, max: number): string {
@@ -193,6 +231,21 @@ returned in fullOutputPath (read it with bash if you need more). Non-printable c
       .describe("Working directory for the command, relative to the workspace root or absolute."),
   }),
   async execute({ command, timeoutMs = 120_000, cwd }, ctx) {
+    const classification = classifyCommand(command);
+    if (classification === "refused") {
+      return {
+        command,
+        cwd: displayPath(cwd ? resolveToRoot(cwd) : workspaceRoot),
+        exitCode: 1,
+        timedOut: false,
+        aborted: false,
+        stdout: "",
+        stderr: `Refusing to run dangerous command: ${command}`,
+        truncated: false,
+        truncatedBy: null,
+        classification: "refused",
+      };
+    }
     return runCommand(command, {
       cwd: cwd ? resolveToRoot(cwd) : workspaceRoot,
       timeoutMs,

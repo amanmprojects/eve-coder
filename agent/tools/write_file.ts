@@ -2,7 +2,9 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { MAX_FILE_SIZE_BYTES } from "../lib/file-safety.js";
 import { withFileMutationQueue } from "../lib/file-mutation-queue.js";
+import { isBlockedDevicePath, isUNCPath } from "../lib/path-guards.js";
 import { displayPath, resolveToRoot } from "../lib/workspace.js";
 
 export default defineTool({
@@ -20,6 +22,21 @@ existing file. Relative paths resolve against the workspace root.`,
   }),
   async execute({ path, content, overwrite }) {
     const abs = resolveToRoot(path);
+
+    if (isUNCPath(abs)) {
+      throw new Error(`Cannot write to UNC path: ${path}. Use a local path instead.`);
+    }
+    if (await isBlockedDevicePath(abs)) {
+      throw new Error(`Cannot write to device file: ${path}.`);
+    }
+
+    const contentBytes = Buffer.byteLength(content, "utf8");
+    if (contentBytes > MAX_FILE_SIZE_BYTES) {
+      throw new Error(
+        `File would be too large (${(contentBytes / 1024).toFixed(1)}KB). Maximum size is ${MAX_FILE_SIZE_BYTES / 1024}KB.`,
+      );
+    }
+
     return withFileMutationQueue(abs, async () => {
       const existing = await stat(abs).catch(() => null);
       if (existing) {

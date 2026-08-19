@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { makeIgnorePredicate } from "../lib/gitignore.js";
+import { isBlockedDevicePath, isUNCPath } from "../lib/path-guards.js";
 import {
   DEFAULT_IGNORED,
   displayPath,
@@ -22,6 +23,14 @@ and {a,b}. Respects the nearest .gitignore in addition to the built-in ignores (
   }),
   async execute({ pattern, cwd, ignore }) {
     const baseAbs = resolveToRoot(cwd ?? "");
+
+    if (isUNCPath(baseAbs)) {
+      throw new Error(`Cannot search UNC path: ${cwd}. Use a local path instead.`);
+    }
+    if (await isBlockedDevicePath(baseAbs)) {
+      throw new Error(`Cannot search device path: ${cwd}. This path would block or produce infinite output.`);
+    }
+
     const ignored = new Set(DEFAULT_IGNORED);
     for (const name of ignore ?? []) ignored.add(name.replace(/^\/+|\/+$/g, "").split("/").pop() ?? name);
     const { skip } = await makeIgnorePredicate(baseAbs, ignored);

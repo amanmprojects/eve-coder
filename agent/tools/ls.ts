@@ -2,6 +2,7 @@ import { lstat, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { isBlockedDevicePath, isUNCPath } from "../lib/path-guards.js";
 import { displayPath, resolveToRoot } from "../lib/workspace.js";
 
 export default defineTool({
@@ -16,6 +17,14 @@ Relative paths resolve against the workspace root. Use this to explore the files
   }),
   async execute({ path, maxEntries = 500 }) {
     const abs = resolveToRoot(path ?? "");
+
+    if (isUNCPath(abs)) {
+      throw new Error(`Cannot list UNC path: ${path}. Use a local path instead.`);
+    }
+    if (await isBlockedDevicePath(abs)) {
+      throw new Error(`Cannot list device path: ${path}. This path would block or produce infinite output.`);
+    }
+
     const info = await stat(abs).catch(() => null);
     if (!info) throw new Error(`Path not found: ${path ?? "."} (resolved to ${abs}).`);
     if (!info.isDirectory()) {

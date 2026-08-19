@@ -4,6 +4,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { findBin } from "../lib/bin.js";
 import { makeIgnorePredicate } from "../lib/gitignore.js";
+import { isBlockedDevicePath, isUNCPath } from "../lib/path-guards.js";
 import { DEFAULT_MAX_BYTES, truncateHead, truncateLine } from "../lib/truncate.js";
 import {
   DEFAULT_IGNORED,
@@ -79,6 +80,14 @@ cross-line patterns. Long matching lines are truncated. Ignores node_modules, .g
   }),
   async execute({ pattern, cwd, globPattern, caseSensitive, literal, context: contextLines = 0, multiline, maxResults = 200 }, ctx) {
     const baseAbs = resolveToRoot(cwd ?? "");
+
+    if (isUNCPath(baseAbs)) {
+      throw new Error(`Cannot search UNC path: ${cwd}. Use a local path instead.`);
+    }
+    if (await isBlockedDevicePath(baseAbs)) {
+      throw new Error(`Cannot search device path: ${cwd}. This path would block or produce infinite output.`);
+    }
+
     const { skip } = await makeIgnorePredicate(baseAbs, DEFAULT_IGNORED);
     let linesWereTruncated = false;
     const markTruncated = () => {
