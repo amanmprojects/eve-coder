@@ -82,56 +82,50 @@ export function Omnibar({
 
   return (
     <box flexDirection="column" alignItems="stretch" width="100%">
-      <box position="relative" width="100%" flexShrink={0}>
-        {/* Palette popup (above the input) */}
-        {isPalette && palette.length > 0 ? (
-          <box
-            position="absolute"
-            left={0}
-            right={0}
-            bottom="100%"
-            marginBottom={0}
-            zIndex={100}
-            overflow="visible"
-            border={true}
-            borderColor={theme.borderSubtle}
-            borderStyle="single"
-            backgroundColor={theme.bg}
-          >
-            <box flexDirection="column" paddingX={1} paddingY={0}>
-              {palette.slice(0, 10).map((entry, i) => {
-                const isSelected = i === safeIndex;
-                const label = `/${entry.name}${entry.argumentHint ? ` ${entry.argumentHint}` : ""}`;
-                return (
-                  <box key={entry.name} flexDirection="row" gap={1}>
-                    <text fg={isSelected ? theme.accent : theme.text}>
-                      {isSelected ? "▸" : " "}
-                    </text>
-                    <text fg={isSelected ? theme.accent : theme.text}>
-                      {label.padEnd(22, " ")}
-                    </text>
-                    <text fg={theme.dim}>
-                      {entry.description}
-                    </text>
-                  </box>
-                );
-              })}
-              <text fg={theme.subtle}>
-                {" ↑↓ navigate · tab fill · enter run · esc close"}
-              </text>
-            </box>
-          </box>
-        ) : null}
-
-        {/* Input bar */}
+      {/* Palette (inline, in normal flow above the input) */}
+      {isPalette && palette.length > 0 ? (
         <box
-          flexDirection="row"
-          width="100%"
-          alignItems="stretch"
-          border={["left"]}
-          borderColor={status === "error" ? theme.warning : theme.accent}
-          borderStyle="heavy"
+          flexShrink={0}
+          border={true}
+          borderColor={theme.borderSubtle}
+          borderStyle="single"
+          backgroundColor={theme.bg}
         >
+          <box flexDirection="column" paddingX={1} paddingY={0}>
+            {palette.slice(0, 10).map((entry, i) => {
+              const isSelected = i === safeIndex;
+              const label = `/${entry.name}${entry.argumentHint ? ` ${entry.argumentHint}` : ""}`;
+              return (
+                <box key={entry.name} flexDirection="row" gap={1}>
+                  <text fg={isSelected ? theme.accent : theme.text}>
+                    {isSelected ? "▸" : " "}
+                  </text>
+                  <text fg={isSelected ? theme.accent : theme.text}>
+                    {label.padEnd(22, " ")}
+                  </text>
+                  <text fg={theme.dim}>
+                    {entry.description}
+                  </text>
+                </box>
+              );
+            })}
+            <text fg={theme.subtle}>
+              {" ↑↓ navigate · tab fill · enter run · esc close"}
+            </text>
+          </box>
+        </box>
+      ) : null}
+
+      {/* Input bar */}
+      <box
+        flexDirection="row"
+        width="100%"
+        alignItems="stretch"
+        flexShrink={0}
+        border={["left"]}
+        borderColor={status === "error" ? theme.warning : theme.accent}
+        borderStyle="heavy"
+      >
           <box
             flexGrow={1}
             flexShrink={1}
@@ -168,7 +162,6 @@ export function Omnibar({
             ) : null}
           </box>
         </box>
-      </box>
     </box>
   );
 }

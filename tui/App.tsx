@@ -101,65 +101,6 @@ function AppShell() {
     setPaletteIndex(0);
   }, [inputValue]);
 
-  // Keyboard shortcuts
-  useKeyboard((key) => {
-    // Palette navigation when slash menu is open
-    if (isPalette && paletteEntries.length > 0) {
-      if (key.name === "up" || (key.ctrl && key.name === "p")) {
-        key.preventDefault();
-        setPaletteIndex((i) => (i <= 0 ? paletteEntries.length - 1 : i - 1));
-        return;
-      }
-      if (key.name === "down" || (key.ctrl && key.name === "n")) {
-        key.preventDefault();
-        setPaletteIndex((i) => (i >= paletteEntries.length - 1 ? 0 : i + 1));
-        return;
-      }
-      if (key.name === "tab") {
-        key.preventDefault();
-        const entry = paletteEntries[Math.min(paletteIndex, paletteEntries.length - 1)];
-        if (entry) setInputValue(entry.value);
-        return;
-      }
-    }
-
-    // Ctrl+O: toggle expand
-    if (key.ctrl && key.name === "o") {
-      key.preventDefault();
-      update({ expandTools: !prefs.expandTools });
-    }
-    // Ctrl+R: toggle reasoning
-    if (key.ctrl && key.name === "r") {
-      key.preventDefault();
-      update({ showReasoning: !prefs.showReasoning });
-    }
-    // Escape: interrupt if busy, otherwise clear input
-    if (key.name === "escape") {
-      if (isBusy) {
-        key.preventDefault();
-        agent.cancel().catch(() => {});
-      } else if (inputValue) {
-        key.preventDefault();
-        setInputValue("");
-        setCommandFeedback(null);
-      }
-    }
-    // Ctrl+C: cancel if busy, otherwise exit
-    if (key.ctrl && key.name === "c") {
-      if (isBusy) {
-        key.preventDefault();
-        agent.cancel().catch(() => {});
-      }
-    }
-    // Ctrl+D: exit on empty input
-    if (key.ctrl && key.name === "d") {
-      if (inputValue.length === 0) {
-        key.preventDefault();
-        process.exit(0);
-      }
-    }
-  });
-
   const runSlashCommand = useCallback(
     async (raw: string): Promise<boolean> => {
       const parsed = parseCommand(raw);
@@ -228,6 +169,75 @@ function AppShell() {
     },
     [agent, prefs, update, modelInfo],
   );
+
+  // Keyboard shortcuts
+  useKeyboard((key) => {
+    // Palette navigation when slash menu is open
+    if (isPalette && paletteEntries.length > 0) {
+      if (key.name === "up" || (key.ctrl && key.name === "p")) {
+        key.preventDefault();
+        setPaletteIndex((i) => (i <= 0 ? paletteEntries.length - 1 : i - 1));
+        return;
+      }
+      if (key.name === "down" || (key.ctrl && key.name === "n")) {
+        key.preventDefault();
+        setPaletteIndex((i) => (i >= paletteEntries.length - 1 ? 0 : i + 1));
+        return;
+      }
+      if (key.name === "tab") {
+        key.preventDefault();
+        const entry = paletteEntries[Math.min(paletteIndex, paletteEntries.length - 1)];
+        if (entry) setInputValue(entry.value);
+        return;
+      }
+      // Enter: run the selected palette entry directly instead of letting
+      // the <input> onSubmit fire with the raw (possibly partial) text.
+      if (key.name === "return" || key.name === "enter") {
+        key.preventDefault();
+        const entry = paletteEntries[Math.min(paletteIndex, paletteEntries.length - 1)];
+        if (entry) {
+          void runSlashCommand(entry.value);
+        }
+        return;
+      }
+    }
+
+    // Ctrl+O: toggle expand
+    if (key.ctrl && key.name === "o") {
+      key.preventDefault();
+      update({ expandTools: !prefs.expandTools });
+    }
+    // Ctrl+R: toggle reasoning
+    if (key.ctrl && key.name === "r") {
+      key.preventDefault();
+      update({ showReasoning: !prefs.showReasoning });
+    }
+    // Escape: interrupt if busy, otherwise clear input
+    if (key.name === "escape") {
+      if (isBusy) {
+        key.preventDefault();
+        agent.cancel().catch(() => {});
+      } else if (inputValue) {
+        key.preventDefault();
+        setInputValue("");
+        setCommandFeedback(null);
+      }
+    }
+    // Ctrl+C: cancel if busy, otherwise exit
+    if (key.ctrl && key.name === "c") {
+      if (isBusy) {
+        key.preventDefault();
+        agent.cancel().catch(() => {});
+      }
+    }
+    // Ctrl+D: exit on empty input
+    if (key.ctrl && key.name === "d") {
+      if (inputValue.length === 0) {
+        key.preventDefault();
+        process.exit(0);
+      }
+    }
+  });
 
   const handleSubmit = useCallback(
     (raw: string) => {
