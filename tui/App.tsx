@@ -76,8 +76,53 @@ function AppShell() {
   const errorMessage = commandFeedback ?? (agent.status === "error" && agent.error ? agent.error.message : null);
   const sessionId = agent.session?.sessionId ?? null;
 
+  // Palette navigation state (up/down/tab/enter selection)
+  const [paletteIndex, setPaletteIndex] = useState(0);
+  const isPalette = inputValue.startsWith("/");
+
+  // Build the filtered palette here too, so we can navigate it
+  const paletteEntries = useMemo(() => {
+    if (!isPalette) return [];
+    const typed = inputValue.slice(1);
+    const hasSpace = /\s/.test(typed);
+    const namePart = hasSpace ? typed.split(/\s/)[0]! : typed;
+    const query = namePart.toLowerCase();
+    return commands
+      .filter((c) => c.name.startsWith(query))
+      .map((c) => ({
+        name: c.name,
+        value: c.argumentHint ? `/${c.name} ` : `/${c.name}`,
+        fill: Boolean(c.argumentHint),
+      }));
+  }, [inputValue, isPalette]);
+
+  // Reset palette index when input changes
+  useEffect(() => {
+    setPaletteIndex(0);
+  }, [inputValue]);
+
   // Keyboard shortcuts
   useKeyboard((key) => {
+    // Palette navigation when slash menu is open
+    if (isPalette && paletteEntries.length > 0) {
+      if (key.name === "up" || (key.ctrl && key.name === "p")) {
+        key.preventDefault();
+        setPaletteIndex((i) => (i <= 0 ? paletteEntries.length - 1 : i - 1));
+        return;
+      }
+      if (key.name === "down" || (key.ctrl && key.name === "n")) {
+        key.preventDefault();
+        setPaletteIndex((i) => (i >= paletteEntries.length - 1 ? 0 : i + 1));
+        return;
+      }
+      if (key.name === "tab") {
+        key.preventDefault();
+        const entry = paletteEntries[Math.min(paletteIndex, paletteEntries.length - 1)];
+        if (entry) setInputValue(entry.value);
+        return;
+      }
+    }
+
     // Ctrl+O: toggle expand
     if (key.ctrl && key.name === "o") {
       key.preventDefault();
@@ -252,6 +297,7 @@ function AppShell() {
             onSubmit={handleSubmit}
             status={agent.status}
             errorMessage={errorMessage}
+            paletteIndex={paletteIndex}
           />
           <AppFooter
             statsLeft={statsLeft}
